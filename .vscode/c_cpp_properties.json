@@ -8,8 +8,8 @@
         {
             "name": "PlatformIO",
             "includePath": [
-                "C:/Users/yunth/Documents/PlatformIO/Projects/ProjectG/include",
-                "C:/Users/yunth/Documents/PlatformIO/Projects/ProjectG/src",
+                "D:/workspace/study/ProjectG/include",
+                "D:/workspace/study/ProjectG/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/esp_additions/freertos",
@@ -247,8 +247,8 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
-                    "C:/Users/yunth/Documents/PlatformIO/Projects/ProjectG/include",
-                    "C:/Users/yunth/Documents/PlatformIO/Projects/ProjectG/src",
+                    "D:/workspace/study/ProjectG/include",
+                    "D:/workspace/study/ProjectG/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/esp_additions/freertos",
