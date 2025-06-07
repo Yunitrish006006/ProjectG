@@ -10,6 +10,8 @@
             "includePath": [
                 "D:/workspace/study/ProjectG/include",
                 "D:/workspace/study/ProjectG/src",
+                "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/ESP8266 and ESP32 OLED driver for SSD1306 displays/src",
+                "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/Adafruit NeoPixel",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
@@ -243,7 +245,6 @@
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 ""
             ],
             "browse": {
@@ -251,6 +252,8 @@
                 "path": [
                     "D:/workspace/study/ProjectG/include",
                     "D:/workspace/study/ProjectG/src",
+                    "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/ESP8266 and ESP32 OLED driver for SSD1306 displays/src",
+                    "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/Adafruit NeoPixel",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
@@ -484,7 +487,6 @@
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
-                    "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     ""
                 ]
             },
@@ -494,6 +496,8 @@
                 "ARDUINO_USB_MODE=1",
                 "ARDUINO_RUNNING_CORE=1",
                 "ARDUINO_EVENT_RUNNING_CORE=1",
+                "ARDUINO_USB_MODE=1",
+                "ARDUINO_USB_CDC_ON_BOOT=1",
                 "HAVE_CONFIG_H",
                 "MBEDTLS_CONFIG_FILE=\"mbedtls/esp_config.h\"",
                 "UNITY_INCLUDE_CONFIG_H",

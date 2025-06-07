@@ -131,21 +131,33 @@ void LedController::testPins()
 {
   Serial.println("開始測試LED引腳 - 紅色");
   setColor(255, 0, 0);
-  delay(1000);
+  delay(1500);
 
   Serial.println("測試LED引腳 - 綠色");
   setColor(0, 255, 0);
-  delay(1000);
+  delay(1500);
 
   Serial.println("測試LED引腳 - 藍色");
   setColor(0, 0, 255);
-  delay(1000);
+  delay(1500);
 
   Serial.println("測試LED引腳 - 白色");
   setColor(255, 255, 255);
-  delay(1000);
+  delay(1500);
+
+  Serial.println("測試LED引腳 - 漸變");
+  // 快速展示漸變效果
+  for (int i = 0; i < 256; i += 10)
+  {
+    setColor(255 - i, i, 128);
+    delay(50);
+  }
+
   Serial.println("測試LED引腳 - 熄滅");
   off();
+  delay(500);
+
+  Serial.println("LED測試完成");
 }
 
 void LedController::setBrightness(uint8_t brightness)
