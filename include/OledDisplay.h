@@ -10,6 +10,8 @@
 #define ICON_SOLID 1
 #define ICON_GRADIENT 2
 #define ICON_INFO 3
+#define ICON_WIFI 4
+#define ICON_WIFI_OFF 5
 
 class OledDisplay
 {
@@ -35,6 +37,12 @@ public:
 
     // 顯示簡單的系統狀態信息 (只顯示系統相關信息)
     void showSimpleSystemInfo();
+
+    // 顯示WiFi狀態
+    void showWiFiStatus(bool connected, IPAddress ip = IPAddress(0, 0, 0, 0));
+
+    // 顯示網絡信息的系統狀態
+    void showNetworkSystemInfo(bool wifiConnected, IPAddress ip);
 
     // 顯示綜合信息頁面
     void showInfoPage(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness, const String &mode);

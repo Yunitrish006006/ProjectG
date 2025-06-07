@@ -8,6 +8,17 @@
 #include <WiFi.h>
 #include <time.h>
 
+// 函數聲明
+void oledUpdateTask(void *pvParameters);
+void ledControlTask(void *pvParameters);
+void breathingEffectTask(void *pvParameters);
+void runLedTestSequence();
+void connectToWiFi();
+void configureNTP();
+String getCurrentDateTime();
+void syncTimeWithNTP();
+void wifiMonitorTask(void *pvParameters);
+
 // NTP 設置
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 28800; // 東八區 (UTC+8)
@@ -59,51 +70,6 @@ struct LedCommandData
   int duration;
   bool colorShifting;
 };
-
-// 函數聲明
-void oledUpdateTask(void *pvParameters);
-void ledControlTask(void *pvParameters);
-void breathingEffectTask(void *pvParameters);
-void runLedTestSequence();
-void connectToWiFi();
-void configureNTP();
-String getCurrentDateTime();
-void syncTimeWithNTP();
-void wifiMonitorTask(void *pvParameters);
-
-// 配置NTP服務
-void configureNTP()
-{
-  if (wifiConnected)
-  {
-    // 配置NTP時間
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo))
-    {
-      Serial.println("無法獲取NTP時間");
-      return;
-    }
-
-    Serial.println("NTP時間已同步");
-    Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
-  }
-}
-
-// 獲取當前日期時間字串
-String getCurrentDateTime()
-{
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo))
-  {
-    return "Time not available";
-  }
-
-  char dateTimeStr[20];
-  strftime(dateTimeStr, sizeof(dateTimeStr), "%Y-%m-%d %H:%M", &timeinfo);
-  return String(dateTimeStr);
-}
 
 // OLED 顯示任務
 void oledUpdateTask(void *pvParameters)
@@ -330,6 +296,40 @@ void connectToWiFi()
     Serial.println("WiFi連接失敗");
     wifiConnected = false;
   }
+}
+
+// 配置NTP服務
+void configureNTP()
+{
+  if (wifiConnected)
+  {
+    // 配置NTP時間
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo))
+    {
+      Serial.println("無法獲取NTP時間");
+      return;
+    }
+
+    Serial.println("NTP時間已同步");
+    Serial.println(&timeinfo, "%Y-%m-%d %H:%M:%S");
+  }
+}
+
+// 獲取當前日期時間字串
+String getCurrentDateTime()
+{
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo))
+  {
+    return "Time not available";
+  }
+
+  char dateTimeStr[20];
+  strftime(dateTimeStr, sizeof(dateTimeStr), "%Y-%m-%d %H:%M", &timeinfo);
+  return String(dateTimeStr);
 }
 
 // NTP時間同步

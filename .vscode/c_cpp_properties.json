@@ -10,6 +10,7 @@
             "includePath": [
                 "D:/workspace/study/ProjectG/include",
                 "D:/workspace/study/ProjectG/src",
+                "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/ESP8266 and ESP32 OLED driver for SSD1306 displays/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                 "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/Adafruit NeoPixel",
@@ -242,7 +243,6 @@
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                 "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                 ""
@@ -252,6 +252,7 @@
                 "path": [
                     "D:/workspace/study/ProjectG/include",
                     "D:/workspace/study/ProjectG/src",
+                    "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/ESP8266 and ESP32 OLED driver for SSD1306 displays/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Wire/src",
                     "D:/workspace/study/ProjectG/.pio/libdeps/esp32-s3-n16r8/Adafruit NeoPixel",
@@ -484,7 +485,6 @@
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/USB/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/Update/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WebServer/src",
-                    "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiClientSecure/src",
                     "C:/Users/yunth/.platformio/packages/framework-arduinoespressif32/libraries/WiFiProv/src",
                     ""

@@ -153,6 +153,42 @@ void OledDisplay::showSimpleSystemInfo()
     display();
 }
 
+void OledDisplay::showWiFiStatus(bool connected, IPAddress ip)
+{
+    if (connected)
+    {
+        String ipStr = ip.toString();
+        _display.drawString(0, 42, "WiFi: Connected");
+        _display.drawString(0, 54, "IP: " + ipStr);
+    }
+    else
+    {
+        _display.drawString(0, 42, "WiFi: Disconnected");
+        _display.drawString(0, 54, "IP: Not available");
+    }
+}
+
+void OledDisplay::showNetworkSystemInfo(bool wifiConnected, IPAddress ip)
+{
+    // 清除屏幕並設置標題
+    clear();
+    showTitle("System Status");
+
+    // 顯示上電時間
+    String uptimeString = "Uptime: " + String(millis() / 1000) + "s";
+    _display.drawString(0, 18, uptimeString);
+
+    // 顯示可用內存
+    String memString = "RAM: " + String(ESP.getFreeHeap() / 1024) + "kB";
+    _display.drawString(0, 30, memString);
+
+    // 顯示WiFi狀態和IP地址
+    showWiFiStatus(wifiConnected, ip);
+
+    // 完成顯示
+    display();
+}
+
 void OledDisplay::showInfoPage(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness, const String &mode)
 {
     // Clear and set title
@@ -249,6 +285,20 @@ void OledDisplay::drawIcon(int x, int y, int iconType)
         _display.drawCircle(x + size / 2, y + size / 2, size / 2);
         _display.fillRect(x + size / 2 - 1, y + size / 3, 2, size / 2);
         _display.fillRect(x + size / 2 - 1, y + size / 6, 2, 2);
+        break;
+
+    case ICON_WIFI:
+        // WiFi icon - Connected
+        _display.drawCircle(x + size / 2, y + size / 2, size / 3);
+        _display.drawCircle(x + size / 2, y + size / 2, size / 2);
+        _display.fillCircle(x + size / 2, y + size / 2, 2);
+        break;
+
+    case ICON_WIFI_OFF:
+        // WiFi icon - Disconnected
+        _display.drawCircle(x + size / 2, y + size / 2, size / 3);
+        _display.drawCircle(x + size / 2, y + size / 2, size / 2);
+        _display.drawLine(x + 2, y + size - 2, x + size - 2, y + 2);
         break;
 
     default:
