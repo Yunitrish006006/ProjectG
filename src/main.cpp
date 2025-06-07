@@ -15,15 +15,10 @@ void setup() {
 
 void loop() {
   if (ledState) {
-    digitalWrite(LED_PIN, LOW);
-    Serial.println("內建LED關閉");
+    ledController.off();
+    delay(1000);  
   } else {
-    digitalWrite(LED_PIN, HIGH);
-    Serial.println("內建LED開啟");
-    uint8_t r = random(256);
-    uint8_t g = random(256);
-    uint8_t b = random(256);
-    ledController.setColor(r, g, b);
+    ledController.setColor(random(256), random(256), random(256));
   }
   ledState = !ledState;
   delay(1000);  

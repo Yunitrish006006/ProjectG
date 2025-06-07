@@ -3,7 +3,6 @@
 LedController::LedController(int neopixelPin, int numPixels, int redPin, int greenPin, int bluePin)
   : _neopixelPin(neopixelPin), _numPixels(numPixels),
     _redPin(redPin), _greenPin(greenPin), _bluePin(bluePin),
-    _currentColorIndex(0),
     _pixels(numPixels, neopixelPin, NEO_GRB + NEO_KHZ800) {
 }
 
@@ -32,4 +31,10 @@ void LedController::setRGBColor(int r, int g, int b) {
   ledcWrite(RED_CHANNEL, r);
   ledcWrite(GREEN_CHANNEL, g);
   ledcWrite(BLUE_CHANNEL, b);
+}
+
+void LedController::off() {
+  _pixels.setBrightness(0);
+  _pixels.clear();
+  _pixels.show();
 }
