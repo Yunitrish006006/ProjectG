@@ -13,10 +13,17 @@ public:
   void begin();
   void setColor(uint8_t r, uint8_t g, uint8_t b);
   void off();
-  void on();
-  // 亮度控制方法
+  void on(); // 亮度控制方法
   void setBrightness(uint8_t brightness);
   uint8_t getBrightness() const;
+  // 呼吸燈效果方法
+  void breathe(uint8_t r, uint8_t g, uint8_t b,
+               int steps = 100, int duration = 4000, bool colorShifting = true);
+  void stopBreathe(); // 停止呼吸燈效果
+
+  // 顏色生成方法
+  void getVividColor(uint8_t &r, uint8_t &g, uint8_t &b, int colorMode = -1);
+
   // 診斷方法
   void testPins();
   void setPinConfig(int neopixelPin, int redPin, int greenPin, int bluePin);
