@@ -8,6 +8,7 @@
 #include "freertos/semphr.h"
 #include <WiFi.h>
 #include <time.h>
+#include <driver/i2s.h>
 
 // NTP 設置
 const char *ntpServer = "pool.ntp.org";
@@ -26,14 +27,24 @@ const int LED_PIN = LED_BUILTIN;
 // 音量控制按鈕
 const int VOLUME_UP_PIN = 1;   // GPIO1 音量增加按鈕
 const int VOLUME_DOWN_PIN = 2; // GPIO2 音量減少按鈕
+// 麥克風控制按鈕
+const int MIC_CONTROL_PIN = 42; // GPIO3 麥克風開關按鈕
 // ESP32-S3 N16R8 常用 I2C 腳位
 const int I2C_SDA = 8; // GPIO8 是 ESP32-S3 N16R8 的默認 SDA
 const int I2C_SCL = 9; // GPIO9 是 ESP32-S3 N16R8 的默認 SCL
 
-// I2S 音頻引腳定義
+// I2S 音頻引腳定義 (用於音頻播放)
 #define I2S_DOUT 15
 #define I2S_BCLK 16
 #define I2S_LRC 17
+
+// I2S 麥克風引腳定義 (使用 I2S_NUM_1)
+#define MIC_I2S_WS 18  // 字選擇信號
+#define MIC_I2S_SD 21  // 音頻數據輸入 (改用 GPIO21)
+#define MIC_I2S_SCK 20 // 時鐘信號
+#define MIC_I2S_PORT I2S_NUM_1
+#define MIC_SAMPLE_BITS 16
+#define MIC_SAMPLE_RATE 16000
 
 // 任務處理柄
 TaskHandle_t ledTaskHandle = NULL;
@@ -41,6 +52,7 @@ TaskHandle_t oledTaskHandle = NULL;
 TaskHandle_t breathingTaskHandle = NULL;
 TaskHandle_t audioTaskHandle = NULL;
 TaskHandle_t buttonTaskHandle = NULL;
+TaskHandle_t micTaskHandle = NULL;
 
 // 隊列與同步對象
 QueueHandle_t ledCommandQueue = NULL;
@@ -55,6 +67,12 @@ uint8_t r = 255, g = 0, b = 0;                        // 初始顏色為紅色
 
 // 音量控制變數
 int currentVolume = 12; // 初始音量 (0-21)
+
+// 麥克風相關變數
+const int micBufLen = 256;
+const int micBufLenBytes = micBufLen * (MIC_SAMPLE_BITS / 8);
+int16_t micAudioBuf[256];
+bool micEnabled = false;
 
 // 命令定義
 enum LedCommand
@@ -71,6 +89,14 @@ enum VolumeCommand
     VOL_UP,
     VOL_DOWN,
     VOL_SET
+};
+
+// 麥克風控制命令
+enum MicCommand
+{
+    MIC_START,
+    MIC_STOP,
+    MIC_TOGGLE
 };
 
 // 命令結構
@@ -91,18 +117,28 @@ struct VolumeCommandData
     int volume;
 };
 
+// 麥克風命令結構
+struct MicCommandData
+{
+    MicCommand cmd;
+};
+
 // 函數聲明
 void oledUpdateTask(void *pvParameters);
 void ledControlTask(void *pvParameters);
 void breathingEffectTask(void *pvParameters);
 void audioControlTask(void *pvParameters);
 void buttonControlTask(void *pvParameters);
+void microphoneTask(void *pvParameters);
 void runLedTestSequence();
 void connectToWiFi();
 void configureNTP();
 String getCurrentDateTime();
 void syncTimeWithNTP();
 void wifiMonitorTask(void *pvParameters);
+esp_err_t setupMicrophone();
+void startMicrophone();
+void stopMicrophone();
 
 // 配置NTP服務
 void configureNTP()
@@ -165,6 +201,10 @@ void oledUpdateTask(void *pvParameters)
             // 顯示音頻和音量狀態
             String audioStatus = "Audio: Playing Vol:" + String(currentVolume);
             oled.showText(audioStatus, 0, 54);
+
+            // 顯示麥克風狀態
+            String micStatus = "Mic: " + String(micEnabled ? "ON" : "OFF");
+            oled.showText(micStatus, 90, 54);
         }
         else
         {
@@ -173,6 +213,10 @@ void oledUpdateTask(void *pvParameters)
             oled.showText("WiFi: Disconnected", 18, 42);
             String audioStatus = "Audio: Stopped Vol:" + String(currentVolume);
             oled.showText(audioStatus, 0, 54);
+
+            // 顯示麥克風狀態
+            String micStatus = "Mic: " + String(micEnabled ? "ON" : "OFF");
+            oled.showText(micStatus, 90, 54);
         }
 
         oled.display();
@@ -407,14 +451,14 @@ void wifiMonitorTask(void *pvParameters)
 void buttonControlTask(void *pvParameters)
 {
     // 按鈕狀態變數
-    bool volumeUpPressed = false;
-    bool volumeDownPressed = false;
     bool volumeUpLastState = false;
     bool volumeDownLastState = false;
+    bool micControlLastState = false;
 
     // 防抖動計時器
     unsigned long lastVolumeUpTime = 0;
     unsigned long lastVolumeDownTime = 0;
+    unsigned long lastMicControlTime = 0;
     const unsigned long debounceDelay = 200; // 200ms防抖動延遲
 
     VolumeCommandData volumeCmd;
@@ -425,6 +469,7 @@ void buttonControlTask(void *pvParameters)
         // 讀取按鈕狀態 (按下為LOW，因為使用內部上拉電阻)
         bool volumeUpCurrentState = !digitalRead(VOLUME_UP_PIN);
         bool volumeDownCurrentState = !digitalRead(VOLUME_DOWN_PIN);
+        bool micControlCurrentState = !digitalRead(MIC_CONTROL_PIN);
 
         unsigned long currentTime = millis();
 
@@ -437,9 +482,7 @@ void buttonControlTask(void *pvParameters)
             xQueueSend(volumeCommandQueue, &volumeCmd, 0);
             lastVolumeUpTime = currentTime;
             Serial.println("Volume UP button pressed");
-        }
-
-        // 處理音量減少按鈕
+        } // 處理音量減少按鈕
         if (volumeDownCurrentState && !volumeDownLastState &&
             (currentTime - lastVolumeDownTime) > debounceDelay)
         {
@@ -450,9 +493,153 @@ void buttonControlTask(void *pvParameters)
             Serial.println("Volume DOWN button pressed");
         }
 
+        // 處理麥克風控制按鈕
+        if (micControlCurrentState && !micControlLastState &&
+            (currentTime - lastMicControlTime) > debounceDelay)
+        {
+            // 切換麥克風狀態
+            if (micEnabled)
+            {
+                stopMicrophone();
+            }
+            else
+            {
+                startMicrophone();
+            }
+            lastMicControlTime = currentTime;
+            Serial.println("Microphone control button pressed");
+        }
+
         // 更新按鈕狀態
         volumeUpLastState = volumeUpCurrentState;
         volumeDownLastState = volumeDownCurrentState;
+        micControlLastState = micControlCurrentState;
+
+        vTaskDelay(xDelay);
+    }
+}
+
+// 麥克風設置函數
+esp_err_t setupMicrophone()
+{
+    const i2s_config_t i2s_config = {
+        .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = MIC_SAMPLE_RATE,
+        .bits_per_sample = i2s_bits_per_sample_t(MIC_SAMPLE_BITS),
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 512,
+        .use_apll = false};
+
+    const i2s_pin_config_t pin_config = {
+        .bck_io_num = MIC_I2S_SCK,
+        .ws_io_num = MIC_I2S_WS,
+        .data_out_num = -1,
+        .data_in_num = MIC_I2S_SD};
+
+    esp_err_t result = i2s_driver_install(MIC_I2S_PORT, &i2s_config, 0, NULL);
+    if (result != ESP_OK)
+    {
+        Serial.printf("麥克風 I2S 驅動安裝失敗: %d\n", result);
+        return result;
+    }
+
+    result = i2s_set_pin(MIC_I2S_PORT, &pin_config);
+    if (result != ESP_OK)
+    {
+        Serial.printf("麥克風 I2S 引腳設定失敗: %d\n", result);
+        return result;
+    }
+
+    Serial.println("✓ 麥克風 I2S 設定成功");
+    return ESP_OK;
+}
+
+void startMicrophone()
+{
+    if (!micEnabled)
+    {
+        esp_err_t result = i2s_start(MIC_I2S_PORT);
+        if (result == ESP_OK)
+        {
+            micEnabled = true;
+            Serial.println("✓ 麥克風已啟動");
+        }
+        else
+        {
+            Serial.printf("麥克風啟動失敗: %d\n", result);
+        }
+    }
+}
+
+void stopMicrophone()
+{
+    if (micEnabled)
+    {
+        i2s_stop(MIC_I2S_PORT);
+        micEnabled = false;
+        Serial.println("✓ 麥克風已停止");
+    }
+}
+
+// 麥克風任務
+void microphoneTask(void *pvParameters)
+{
+    Serial.println("麥克風任務啟動");
+
+    // 等待系統初始化完成
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+
+    // 設置麥克風
+    if (setupMicrophone() != ESP_OK)
+    {
+        Serial.println("✗ 麥克風設置失敗，任務結束");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    const TickType_t xDelay = 10 / portTICK_PERIOD_MS;
+    size_t bytesRead = 0;
+    static int audioLevelCounter = 0;
+
+    while (true)
+    {
+        if (micEnabled)
+        {
+            // 從麥克風讀取音頻數據
+            esp_err_t result = i2s_read(MIC_I2S_PORT, micAudioBuf, micBufLenBytes, &bytesRead, 100);
+
+            if (result == ESP_OK && bytesRead > 0)
+            {
+                // 將音頻數據寫入串口
+                Serial.write((uint8_t *)micAudioBuf, bytesRead);
+
+                // 每500次循環顯示一次音頻電平（避免影響OLED顯示）
+                audioLevelCounter++;
+                if (audioLevelCounter >= 500)
+                {
+                    audioLevelCounter = 0;
+
+                    // 計算音頻電平
+                    long sum = 0;
+                    for (int i = 0; i < micBufLen; i++)
+                    {
+                        sum += abs(micAudioBuf[i]);
+                    }
+                    int avgLevel = sum / micBufLen;
+
+                    // 通過串口輸出電平信息（可選）
+                    // Serial.printf("Mic Level: %d\n", avgLevel);
+                }
+            }
+        }
+        else
+        {
+            // 麥克風未啟用時等待
+            vTaskDelay(100 / portTICK_PERIOD_MS);
+        }
 
         vTaskDelay(xDelay);
     }
@@ -543,12 +730,11 @@ void setup()
     // 使用 vTaskDelay 代替 delay
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     randomSeed(analogRead(A0));
-    pinMode(LED_PIN, OUTPUT);
-
-    // 初始化音量控制按鈕
+    pinMode(LED_PIN, OUTPUT); // 初始化音量控制按鈕
     pinMode(VOLUME_UP_PIN, INPUT_PULLUP);
     pinMode(VOLUME_DOWN_PIN, INPUT_PULLUP);
-    Serial.println("Volume control buttons initialized");
+    pinMode(MIC_CONTROL_PIN, INPUT_PULLUP);
+    Serial.println("Volume control and microphone buttons initialized");
 
     // 初始化 OLED 顯示
     oled.begin();
@@ -633,7 +819,20 @@ void setup()
         2,                 // 中等優先級 (2)
         &buttonTaskHandle, // 任務控制句柄
         APP_CPU_NUM        // 在第二個核心上運行
-    );                     // 創建音頻控制任務 - 使用高優先級和專用核心
+    );
+
+    // 創建麥克風任務
+    xTaskCreatePinnedToCore(
+        microphoneTask, // 任務函數
+        "Microphone",   // 任務名稱
+        6144,           // 堆棧大小
+        NULL,           // 參數
+        2,              // 中等優先級 (2)
+        &micTaskHandle, // 任務控制句柄
+        APP_CPU_NUM     // 在第二個核心上運行
+    );
+
+    // 創建音頻控制任務 - 使用高優先級和專用核心
     xTaskCreatePinnedToCore(
         audioControlTask, // 任務函數
         "Audio Control",  // 任務名稱
