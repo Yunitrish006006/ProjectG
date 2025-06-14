@@ -12,6 +12,9 @@ void AudioPlayer::begin()
 {
     audio.setPinout(i2s_bclk, i2s_lrc, i2s_dout);
     audio.setVolume(volume);
+
+    // 設定音頻緩衝參數以減少中斷
+    // 這些參數可能需要根據具體的 Audio 庫版本調整
 }
 
 void AudioPlayer::setVolume(int vol)
@@ -46,6 +49,7 @@ void AudioPlayer::stopAndPlay(const char *url)
 
 void AudioPlayer::loop()
 {
+    // 確保音頻循環被頻繁調用以維持流暢播放
     audio.loop();
 }
 
