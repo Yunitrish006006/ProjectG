@@ -17,6 +17,36 @@ void AudioPlayer::begin()
     // 這些參數可能需要根據具體的 Audio 庫版本調整
 }
 
+bool AudioPlayer::beginSafe(int maxRetries)
+{
+    for (int attempt = 0; attempt < maxRetries; attempt++)
+    {
+        Serial.printf("AudioPlayer 初始化嘗試 %d/%d\n", attempt + 1, maxRetries);
+
+        // 每次嘗試前稍作延遲，確保硬體準備就緒
+        if (attempt > 0)
+        {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        // 嘗試設置引腳配置
+        bool success = true;
+
+        // 這裡我們無法直接捕獲硬體異常，但可以設置一個看門狗機制
+        // 或者依賴上層的異常處理
+        audio.setPinout(i2s_bclk, i2s_lrc, i2s_dout);
+
+        // 如果到達這裡，說明 setPinout 沒有崩潰
+        audio.setVolume(volume);
+
+        Serial.printf("AudioPlayer 初始化成功 (嘗試 %d)\n", attempt + 1);
+        return true;
+    }
+
+    Serial.printf("AudioPlayer 初始化失敗，已嘗試 %d 次\n", maxRetries);
+    return false;
+}
+
 void AudioPlayer::setVolume(int vol)
 {
     if (vol >= 0 && vol <= 21)

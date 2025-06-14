@@ -583,12 +583,25 @@ void buttonControlTask(void *pvParameters)
             }
             lastMicControlTime = currentTime;
             Serial.println("Microphone control button pressed");
-        }
-
-        // 更新按鈕狀態
+        } // 更新按鈕狀態
         volumeUpLastState = volumeUpCurrentState;
         volumeDownLastState = volumeDownCurrentState;
         micControlLastState = micControlCurrentState;
+
+        // 檢查狀態一致性，處理異常情況
+        static int stateCheckCounter = 0;
+        stateCheckCounter++;
+        if (stateCheckCounter >= 1000)
+        { // 每1000次循環檢查一次
+            stateCheckCounter = 0;
+            if (!micEnabled && micToSpeakerMode)
+            {
+                // 狀態不一致：麥克風未啟用但對講模式開啟
+                Serial.println("偵測到狀態不一致：強制關閉對講模式");
+                micToSpeakerMode = false;
+                musicPaused = false;
+            }
+        }
 
         vTaskDelay(xDelay);
     }
@@ -697,6 +710,31 @@ esp_err_t setupI2SOutput()
     return ESP_OK;
 }
 
+// 完全清理 I2S 資源
+esp_err_t cleanupI2SResources()
+{
+    Serial.println("開始完全清理 I2S 資源...");
+
+    // 停止所有 I2S 端口
+    esp_err_t result1 = i2s_stop(I2S_NUM_0);
+    esp_err_t result2 = i2s_stop(I2S_NUM_1);
+
+    // 短暫延遲
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // 卸載所有 I2S 驅動
+    esp_err_t result3 = i2s_driver_uninstall(I2S_NUM_0);
+    esp_err_t result4 = i2s_driver_uninstall(I2S_NUM_1);
+
+    Serial.printf("I2S 清理結果 - 停止: %d,%d 卸載: %d,%d\n", result1, result2, result3, result4);
+
+    // 較長延遲確保硬體完全重置
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    Serial.println("I2S 資源清理完成");
+    return ESP_OK;
+}
+
 void startMicrophone()
 {
     if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
@@ -756,53 +794,42 @@ void startMicrophone()
 
 void stopMicrophone()
 {
-    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
+    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(2000)) == pdTRUE)
     {
         if (micEnabled)
         {
             Serial.println("正在停止麥克風...");
 
-            // 停止麥克風 I2S
-            esp_err_t micStopResult = i2s_stop(MIC_I2S_PORT);
-            if (micStopResult != ESP_OK)
-            {
-                Serial.printf("麥克風 I2S 停止失敗: %d\n", micStopResult);
-            }
-
-            micEnabled = false;
+            // 先設置狀態變量，防止 microphoneTask 繼續寫入
             micToSpeakerMode = false;
+            micEnabled = false; // 短暂延迟，让其他任务有时间检查状态变化
+            vTaskDelay(pdMS_TO_TICKS(100));
 
-            // 完全停止並卸載 I2S 輸出
-            esp_err_t outputStopResult = i2s_stop(I2S_NUM_0);
-            if (outputStopResult != ESP_OK && outputStopResult != ESP_ERR_INVALID_STATE)
-            {
-                Serial.printf("I2S 輸出停止失敗: %d\n", outputStopResult);
-            }
-
-            esp_err_t outputUninstallResult = i2s_driver_uninstall(I2S_NUM_0);
-            if (outputUninstallResult != ESP_OK && outputUninstallResult != ESP_ERR_INVALID_STATE)
-            {
-                Serial.printf("I2S 輸出卸載失敗: %d\n", outputUninstallResult);
-            }
-
-            // 延遲確保完全卸載並避免資源衝突
-            vTaskDelay(pdMS_TO_TICKS(200));
-
-            // 重新初始化 AudioPlayer 並恢復音樂
+            // 使用完全清理函数
+            cleanupI2SResources(); // 重新初始化 AudioPlayer 並恢復音樂
             Serial.println("正在重新初始化音樂播放器...");
-            audioPlayer.begin();
-            audioPlayer.setVolume(currentVolume);
 
-            if (musicPaused)
+            // 使用安全初始化方法
+            bool audioInitSuccess = audioPlayer.beginSafe(3);
+
+            if (audioInitSuccess)
             {
-                // 延遲後恢復播放
-                vTaskDelay(pdMS_TO_TICKS(300));
-                audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
-                musicPaused = false;
-                Serial.println("✓ 音樂播放已恢復");
+                if (musicPaused)
+                {
+                    // 延遲後恢復播放
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                    audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
+                    musicPaused = false;
+                    Serial.println("✓ 音樂播放已恢復");
+                }
+                Serial.println("✓ 麥克風已停止，系統已恢復正常模式");
             }
-
-            Serial.println("✓ 麥克風已停止，系統已恢復正常模式");
+            else
+            {
+                Serial.println("✗ AudioPlayer 初始化失敗，請檢查系統狀態");
+                // 設置標誌，讓系統知道需要手動恢復
+                musicPaused = true;
+            }
         }
         xSemaphoreGive(i2sMutex);
     }
@@ -840,40 +867,58 @@ void microphoneTask(void *pvParameters)
             esp_err_t result = i2s_read(MIC_I2S_PORT, micAudioBuf, micBufLenBytes, &bytesRead, 100);
             if (result == ESP_OK && bytesRead > 0)
             {
-                if (micToSpeakerMode)
+                if (micToSpeakerMode && micEnabled)
                 {
                     // 對講模式：將音頻數據直接輸出到喇叭
-                    // 確保音頻數據格式正確（16位單聲道）
-                    size_t bytesWritten = 0;
-                    esp_err_t writeResult = i2s_write(I2S_NUM_0, micAudioBuf, bytesRead, &bytesWritten, pdMS_TO_TICKS(10));
-                    if (writeResult != ESP_OK)
+                    // 額外檢查 I2S 狀態，確保資源未被釋放
+                    if (i2sMutex != NULL && xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(5)) == pdTRUE)
                     {
-                        // 如果 I2S 寫入失敗，可能是因為 I2S 未正確初始化或已被關閉
-                        static int errorCount = 0;
-                        errorCount++;
-                        if (errorCount % 100 == 0)
-                        { // 每100次錯誤才報告一次，避免串口溢出
-                            Serial.printf("I2S 寫入錯誤 (count: %d): %d\n", errorCount, writeResult);
-                        }
-
-                        // 如果持續出錯，可能需要重置對講模式
-                        if (errorCount > 1000)
+                        // 再次檢查狀態，防止在獲取互斥鎖期間狀態改變
+                        if (micToSpeakerMode && micEnabled)
                         {
-                            Serial.println("I2S 寫入持續失敗，嘗試重置對講模式");
-                            stopMicrophone();
-                            errorCount = 0;
+                            size_t bytesWritten = 0;
+                            esp_err_t writeResult = i2s_write(I2S_NUM_0, micAudioBuf, bytesRead, &bytesWritten, pdMS_TO_TICKS(5));
+                            if (writeResult != ESP_OK)
+                            {
+                                // 如果 I2S 寫入失敗，可能是因為 I2S 未正確初始化或已被關閉
+                                static int errorCount = 0;
+                                errorCount++;
+                                if (errorCount % 50 == 0)
+                                { // 每50次錯誤才報告一次，避免串口溢出
+                                    Serial.printf("I2S 寫入錯誤 (count: %d): %d\n", errorCount, writeResult);
+                                }
+
+                                // 如果持續出錯，標記為需要重置（不直接調用 stopMicrophone 避免死鎖）
+                                if (errorCount > 200)
+                                {
+                                    Serial.println("I2S 寫入持續失敗，標記需要重置對講模式");
+                                    micToSpeakerMode = false;
+                                    errorCount = 0;
+                                }
+                            }
+                            else
+                            {
+                                // 重置錯誤計數器
+                                static int successCount = 0;
+                                static int errorCount = 0;
+                                successCount++;
+                                if (successCount >= 100)
+                                {
+                                    errorCount = 0;
+                                    successCount = 0;
+                                }
+                            }
                         }
+                        xSemaphoreGive(i2sMutex);
                     }
                     else
                     {
-                        // 重置錯誤計數器
-                        static int successCount = 0;
-                        successCount++;
-                        if (successCount >= 100)
+                        // 無法獲取互斥鎖，跳過此次寫入
+                        static int mutexFailCount = 0;
+                        mutexFailCount++;
+                        if (mutexFailCount % 100 == 0)
                         {
-                            static int errorCount = 0; // 重置 errorCount（僅在有成功寫入時）
-                            errorCount = 0;
-                            successCount = 0;
+                            Serial.printf("無法獲取 I2S 互斥鎖 (count: %d)\n", mutexFailCount);
                         }
                     }
                 }

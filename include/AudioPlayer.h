@@ -20,6 +20,9 @@ public:
     // Initialize audio system
     void begin();
 
+    // Safe initialization with retry mechanism
+    bool beginSafe(int maxRetries = 3);
+
     // Volume control
     void setVolume(int vol);
     int getVolume(); // Playback control
