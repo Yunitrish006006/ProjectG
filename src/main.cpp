@@ -46,7 +46,8 @@ void setup()
     audio.setVolume(21); // 0...21
 
     // Connect to online stream
-    audio.connecttohost("http://mp3.ffh.de/radioffh/hqlivestream.mp3"); //  128k mp3
+    audio.connecttohost("http://tangosl.4hotel.tw:8005/play.mp3"); //  128k aac
+    // audio.connecttohost("http://mp3.ffh.de/radioffh/hqlivestream.mp3"); //  128k mp3
 }
 
 void loop()

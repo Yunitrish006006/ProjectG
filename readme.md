@@ -4,7 +4,7 @@
 
 ## 硬體需求
 
-- ESP32-S3 N16R8 開發板
+- ESP32-S3 N16R8 開發板 [開發版連結](https://www.taiwansensor.com.tw/product/esp32-s3-devkitc-1-%E9%96%8B%E7%99%BC%E6%9D%BF-%E6%A8%82%E9%91%AB-wroom-1-n16r8-%E5%B7%B2%E7%84%8A%E6%8E%A5%E9%87%9D%E8%85%B3/?srsltid=AfmBOopRlAkA0Pqg56TTQj8SVzKgSCUIz-w4B6i-VNpxVR8ESW0LrRBx)
 - SH1106 OLED 顯示模組 (I2C)
 - RGB LED（共陰極或共陽極）
 - WS2812B/NeoPixel LED（可選）
