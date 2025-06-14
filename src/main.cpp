@@ -58,6 +58,7 @@ TaskHandle_t micTaskHandle = NULL;
 QueueHandle_t ledCommandQueue = NULL;
 QueueHandle_t volumeCommandQueue = NULL;
 SemaphoreHandle_t ledMutex = NULL;
+SemaphoreHandle_t i2sMutex = NULL;
 
 // 全局對象
 LedController ledController;
@@ -73,6 +74,8 @@ const int micBufLen = 256;
 const int micBufLenBytes = micBufLen * (MIC_SAMPLE_BITS / 8);
 int16_t micAudioBuf[256];
 bool micEnabled = false;
+bool musicPaused = false;      // 音樂是否被暫停
+bool micToSpeakerMode = false; // 麥克風輸出到喇叭模式
 
 // 命令定義
 enum LedCommand
@@ -139,6 +142,9 @@ void wifiMonitorTask(void *pvParameters);
 esp_err_t setupMicrophone();
 void startMicrophone();
 void stopMicrophone();
+esp_err_t setupI2SOutput();
+void pauseMusicAndStartMic();
+void stopMicAndResumeMusic();
 
 // 配置NTP服務
 void configureNTP()
@@ -199,11 +205,19 @@ void oledUpdateTask(void *pvParameters)
             oled.showText("WiFi: Connected", 18, 42);
 
             // 顯示音頻和音量狀態
-            String audioStatus = "Audio: Playing Vol:" + String(currentVolume);
+            String audioStatus;
+            if (micToSpeakerMode)
+            {
+                audioStatus = "Audio: Intercom Vol:" + String(currentVolume);
+            }
+            else
+            {
+                audioStatus = "Audio: Playing Vol:" + String(currentVolume);
+            }
             oled.showText(audioStatus, 0, 54);
 
             // 顯示麥克風狀態
-            String micStatus = "Mic: " + String(micEnabled ? "ON" : "OFF");
+            String micStatus = "Mic: " + String(micEnabled ? (micToSpeakerMode ? "TALK" : "REC") : "OFF");
             oled.showText(micStatus, 90, 54);
         }
         else
@@ -211,11 +225,20 @@ void oledUpdateTask(void *pvParameters)
             // 繪製無連接WiFi圖標
             oled.drawIcon(0, 42, ICON_WIFI_OFF);
             oled.showText("WiFi: Disconnected", 18, 42);
-            String audioStatus = "Audio: Stopped Vol:" + String(currentVolume);
+
+            String audioStatus;
+            if (micToSpeakerMode)
+            {
+                audioStatus = "Audio: Intercom Vol:" + String(currentVolume);
+            }
+            else
+            {
+                audioStatus = "Audio: Stopped Vol:" + String(currentVolume);
+            }
             oled.showText(audioStatus, 0, 54);
 
             // 顯示麥克風狀態
-            String micStatus = "Mic: " + String(micEnabled ? "ON" : "OFF");
+            String micStatus = "Mic: " + String(micEnabled ? (micToSpeakerMode ? "TALK" : "REC") : "OFF");
             oled.showText(micStatus, 90, 54);
         }
 
@@ -228,6 +251,14 @@ void oledUpdateTask(void *pvParameters)
 void ledControlTask(void *pvParameters)
 {
     LedCommandData cmd;
+
+    // 等待隊列初始化
+    while (ledCommandQueue == NULL || ledMutex == NULL)
+    {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
+
+    Serial.println("LED 控制任務已啟動");
 
     while (true)
     {
@@ -319,6 +350,13 @@ void breathingEffectTask(void *pvParameters)
 // 啟動測試序列
 void runLedTestSequence()
 {
+    if (ledCommandQueue == NULL)
+    {
+        Serial.println("ERROR: ledCommandQueue 未初始化，跳過 LED 測試");
+        return;
+    }
+
+    Serial.println("開始 LED 測試序列...");
     LedCommandData cmd;
 
     // RED
@@ -326,7 +364,11 @@ void runLedTestSequence()
     cmd.r = 255;
     cmd.g = 0;
     cmd.b = 0;
-    xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
+    if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        Serial.println("LED 隊列發送失敗 (RED)");
+        return;
+    }
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
     // GREEN
@@ -334,15 +376,21 @@ void runLedTestSequence()
     cmd.r = 0;
     cmd.g = 255;
     cmd.b = 0;
-    xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-
-    // BLUE
+    if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        Serial.println("LED 隊列發送失敗 (GREEN)");
+        return;
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS); // BLUE
     cmd.cmd = CMD_SET_COLOR;
     cmd.r = 0;
     cmd.g = 0;
     cmd.b = 255;
-    xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
+    if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        Serial.println("LED 隊列發送失敗 (BLUE)");
+        return;
+    }
     vTaskDelay(500 / portTICK_PERIOD_MS);
 
     // WHITE
@@ -350,23 +398,38 @@ void runLedTestSequence()
     cmd.r = 255;
     cmd.g = 255;
     cmd.b = 255;
-    xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-
-    // 漸變效果
+    if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        Serial.println("LED 隊列發送失敗 (WHITE)");
+        return;
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS); // 漸變效果
     for (int i = 0; i < 256; i += 16)
     {
         cmd.cmd = CMD_SET_COLOR;
         cmd.r = 255 - i;
         cmd.g = i;
         cmd.b = 128;
-        xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
+        if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(100)) != pdTRUE)
+        {
+            Serial.println("LED 隊列發送失敗 (漸變效果)");
+            break;
+        }
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 
-    // 關閉LED
-    cmd.cmd = CMD_OFF;
-    xQueueSend(ledCommandQueue, &cmd, portMAX_DELAY);
+    // 啟動呼吸效果
+    cmd.cmd = CMD_BREATHE;
+    cmd.r = 255;
+    cmd.g = 100;
+    cmd.b = 0;
+    if (xQueueSend(ledCommandQueue, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE)
+    {
+        Serial.println("LED 隊列發送失敗 (BREATHE)");
+        return;
+    }
+
+    Serial.println("LED 測試序列完成");
 }
 
 // WiFi 連接函數
@@ -471,26 +534,38 @@ void buttonControlTask(void *pvParameters)
         bool volumeDownCurrentState = !digitalRead(VOLUME_DOWN_PIN);
         bool micControlCurrentState = !digitalRead(MIC_CONTROL_PIN);
 
-        unsigned long currentTime = millis();
-
-        // 處理音量增加按鈕
+        unsigned long currentTime = millis(); // 處理音量增加按鈕
         if (volumeUpCurrentState && !volumeUpLastState &&
             (currentTime - lastVolumeUpTime) > debounceDelay)
         {
             // 按鈕剛被按下
-            volumeCmd.cmd = VOL_UP;
-            xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+            if (volumeCommandQueue != NULL)
+            {
+                volumeCmd.cmd = VOL_UP;
+                xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+                Serial.println("Volume UP button pressed");
+            }
+            else
+            {
+                Serial.println("ERROR: volumeCommandQueue 未初始化");
+            }
             lastVolumeUpTime = currentTime;
-            Serial.println("Volume UP button pressed");
         } // 處理音量減少按鈕
         if (volumeDownCurrentState && !volumeDownLastState &&
             (currentTime - lastVolumeDownTime) > debounceDelay)
         {
             // 按鈕剛被按下
-            volumeCmd.cmd = VOL_DOWN;
-            xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+            if (volumeCommandQueue != NULL)
+            {
+                volumeCmd.cmd = VOL_DOWN;
+                xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+                Serial.println("Volume DOWN button pressed");
+            }
+            else
+            {
+                Serial.println("ERROR: volumeCommandQueue 未初始化");
+            }
             lastVolumeDownTime = currentTime;
-            Serial.println("Volume DOWN button pressed");
         }
 
         // 處理麥克風控制按鈕
@@ -552,35 +627,188 @@ esp_err_t setupMicrophone()
         Serial.printf("麥克風 I2S 引腳設定失敗: %d\n", result);
         return result;
     }
-
     Serial.println("✓ 麥克風 I2S 設定成功");
+    return ESP_OK;
+}
+
+// 設置 I2S 輸出（用於麥克風聲音輸出到喇叭）
+esp_err_t setupI2SOutput()
+{
+    // 先停止並卸載現有的 I2S_NUM_0
+    esp_err_t stopResult = i2s_stop(I2S_NUM_0);
+    if (stopResult != ESP_OK && stopResult != ESP_ERR_INVALID_STATE)
+    {
+        Serial.printf("警告：I2S 停止失敗: %d\n", stopResult);
+    }
+
+    esp_err_t uninstallResult = i2s_driver_uninstall(I2S_NUM_0);
+    if (uninstallResult != ESP_OK && uninstallResult != ESP_ERR_INVALID_STATE)
+    {
+        Serial.printf("警告：I2S 卸載失敗: %d\n", uninstallResult);
+    }
+
+    // 短暫延遲確保完全卸載
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    const i2s_config_t i2s_config = {
+        .mode = i2s_mode_t(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = MIC_SAMPLE_RATE, // 使用與麥克風相同的採樣率
+        .bits_per_sample = i2s_bits_per_sample_t(MIC_SAMPLE_BITS),
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = i2s_comm_format_t(I2S_COMM_FORMAT_STAND_I2S),
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 256, // 匹配麥克風緩衝區大小
+        .use_apll = false};
+
+    const i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_BCLK,
+        .ws_io_num = I2S_LRC,
+        .data_out_num = I2S_DOUT,
+        .data_in_num = -1};
+
+    esp_err_t result = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    if (result != ESP_OK)
+    {
+        Serial.printf("I2S 輸出驅動安裝失敗: %d\n", result);
+        return result;
+    }
+
+    result = i2s_set_pin(I2S_NUM_0, &pin_config);
+    if (result != ESP_OK)
+    {
+        Serial.printf("I2S 輸出引腳設定失敗: %d\n", result);
+        i2s_driver_uninstall(I2S_NUM_0);
+        return result;
+    }
+
+    result = i2s_start(I2S_NUM_0);
+    if (result != ESP_OK)
+    {
+        Serial.printf("I2S 輸出啟動失敗: %d\n", result);
+        i2s_driver_uninstall(I2S_NUM_0);
+        return result;
+    }
+
+    // 清空 I2S FIFO 緩衝區
+    i2s_zero_dma_buffer(I2S_NUM_0);
+
+    Serial.println("✓ I2S 輸出設定成功（對講模式）");
     return ESP_OK;
 }
 
 void startMicrophone()
 {
-    if (!micEnabled)
+    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
-        esp_err_t result = i2s_start(MIC_I2S_PORT);
-        if (result == ESP_OK)
+        if (!micEnabled)
         {
-            micEnabled = true;
-            Serial.println("✓ 麥克風已啟動");
+            Serial.println("正在啟動對講模式...");
+
+            // 先完全停止 AudioPlayer 並釋放 I2S 資源
+            Serial.println("正在停止音樂播放...");
+            audioPlayer.stop();
+            musicPaused = true;
+
+            // 確保 AudioPlayer 完全停止
+            vTaskDelay(pdMS_TO_TICKS(200));
+
+            // 啟動麥克風 I2S
+            esp_err_t micStartResult = i2s_start(MIC_I2S_PORT);
+            if (micStartResult != ESP_OK && micStartResult != ESP_ERR_INVALID_STATE)
+            {
+                Serial.printf("麥克風啟動失敗: %d\n", micStartResult);
+                musicPaused = false;
+                xSemaphoreGive(i2sMutex);
+                return;
+            }
+
+            // 重新配置 I2S_NUM_0 為輸出模式
+            esp_err_t outputSetupResult = setupI2SOutput();
+            if (outputSetupResult == ESP_OK)
+            {
+                micEnabled = true;
+                micToSpeakerMode = true;
+                Serial.println("✓ 麥克風已啟動，音樂已暫停，切換到對講模式");
+            }
+            else
+            {
+                Serial.println("✗ I2S 輸出設定失敗，回退到正常模式");
+                i2s_stop(MIC_I2S_PORT);
+                micEnabled = false;
+                micToSpeakerMode = false;
+                musicPaused = false;
+
+                // 恢復音樂播放
+                audioPlayer.begin();
+                audioPlayer.setVolume(currentVolume);
+                vTaskDelay(pdMS_TO_TICKS(200));
+                audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
+            }
         }
-        else
-        {
-            Serial.printf("麥克風啟動失敗: %d\n", result);
-        }
+        xSemaphoreGive(i2sMutex);
+    }
+    else
+    {
+        Serial.println("無法獲取 I2S 互斥鎖，跳過麥克風啟動");
     }
 }
 
 void stopMicrophone()
 {
-    if (micEnabled)
+    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(1000)) == pdTRUE)
     {
-        i2s_stop(MIC_I2S_PORT);
-        micEnabled = false;
-        Serial.println("✓ 麥克風已停止");
+        if (micEnabled)
+        {
+            Serial.println("正在停止麥克風...");
+
+            // 停止麥克風 I2S
+            esp_err_t micStopResult = i2s_stop(MIC_I2S_PORT);
+            if (micStopResult != ESP_OK)
+            {
+                Serial.printf("麥克風 I2S 停止失敗: %d\n", micStopResult);
+            }
+
+            micEnabled = false;
+            micToSpeakerMode = false;
+
+            // 完全停止並卸載 I2S 輸出
+            esp_err_t outputStopResult = i2s_stop(I2S_NUM_0);
+            if (outputStopResult != ESP_OK && outputStopResult != ESP_ERR_INVALID_STATE)
+            {
+                Serial.printf("I2S 輸出停止失敗: %d\n", outputStopResult);
+            }
+
+            esp_err_t outputUninstallResult = i2s_driver_uninstall(I2S_NUM_0);
+            if (outputUninstallResult != ESP_OK && outputUninstallResult != ESP_ERR_INVALID_STATE)
+            {
+                Serial.printf("I2S 輸出卸載失敗: %d\n", outputUninstallResult);
+            }
+
+            // 延遲確保完全卸載並避免資源衝突
+            vTaskDelay(pdMS_TO_TICKS(200));
+
+            // 重新初始化 AudioPlayer 並恢復音樂
+            Serial.println("正在重新初始化音樂播放器...");
+            audioPlayer.begin();
+            audioPlayer.setVolume(currentVolume);
+
+            if (musicPaused)
+            {
+                // 延遲後恢復播放
+                vTaskDelay(pdMS_TO_TICKS(300));
+                audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
+                musicPaused = false;
+                Serial.println("✓ 音樂播放已恢復");
+            }
+
+            Serial.println("✓ 麥克風已停止，系統已恢復正常模式");
+        }
+        xSemaphoreGive(i2sMutex);
+    }
+    else
+    {
+        Serial.println("無法獲取 I2S 互斥鎖，跳過麥克風停止");
     }
 }
 
@@ -610,11 +838,50 @@ void microphoneTask(void *pvParameters)
         {
             // 從麥克風讀取音頻數據
             esp_err_t result = i2s_read(MIC_I2S_PORT, micAudioBuf, micBufLenBytes, &bytesRead, 100);
-
             if (result == ESP_OK && bytesRead > 0)
             {
-                // 將音頻數據寫入串口
-                Serial.write((uint8_t *)micAudioBuf, bytesRead);
+                if (micToSpeakerMode)
+                {
+                    // 對講模式：將音頻數據直接輸出到喇叭
+                    // 確保音頻數據格式正確（16位單聲道）
+                    size_t bytesWritten = 0;
+                    esp_err_t writeResult = i2s_write(I2S_NUM_0, micAudioBuf, bytesRead, &bytesWritten, pdMS_TO_TICKS(10));
+                    if (writeResult != ESP_OK)
+                    {
+                        // 如果 I2S 寫入失敗，可能是因為 I2S 未正確初始化或已被關閉
+                        static int errorCount = 0;
+                        errorCount++;
+                        if (errorCount % 100 == 0)
+                        { // 每100次錯誤才報告一次，避免串口溢出
+                            Serial.printf("I2S 寫入錯誤 (count: %d): %d\n", errorCount, writeResult);
+                        }
+
+                        // 如果持續出錯，可能需要重置對講模式
+                        if (errorCount > 1000)
+                        {
+                            Serial.println("I2S 寫入持續失敗，嘗試重置對講模式");
+                            stopMicrophone();
+                            errorCount = 0;
+                        }
+                    }
+                    else
+                    {
+                        // 重置錯誤計數器
+                        static int successCount = 0;
+                        successCount++;
+                        if (successCount >= 100)
+                        {
+                            static int errorCount = 0; // 重置 errorCount（僅在有成功寫入時）
+                            errorCount = 0;
+                            successCount = 0;
+                        }
+                    }
+                }
+                else
+                {
+                    // 原模式：將音頻數據寫入串口
+                    Serial.write((uint8_t *)micAudioBuf, bytesRead);
+                }
 
                 // 每500次循環顯示一次音頻電平（避免影響OLED顯示）
                 audioLevelCounter++;
@@ -631,7 +898,10 @@ void microphoneTask(void *pvParameters)
                     int avgLevel = sum / micBufLen;
 
                     // 通過串口輸出電平信息（可選）
-                    // Serial.printf("Mic Level: %d\n", avgLevel);
+                    if (!micToSpeakerMode)
+                    {
+                        // Serial.printf("Mic Level: %d\n", avgLevel);
+                    }
                 }
             }
         }
@@ -652,25 +922,32 @@ void audioControlTask(void *pvParameters)
     while (!wifiConnected)
     {
         vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
+    } // 初始化音頻播放器（僅在非對講模式下）
+    if (!micToSpeakerMode)
+    {
+        audioPlayer.begin();
+        audioPlayer.setVolume(currentVolume); // 使用全局音量變數
 
-    // 初始化音頻播放器
-    audioPlayer.begin();
-    audioPlayer.setVolume(currentVolume); // 使用全局音量變數
+        // 開始播放默認音頻流
+        Serial.println("Starting audio playback...");
+        audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
+    }
+    else
+    {
+        Serial.println("跳過音頻播放器初始化（對講模式）");
+    }
 
     const TickType_t xDelay = 1 / portTICK_PERIOD_MS; // 1ms 延遲
     static uint32_t serialCheckCounter = 0;
     VolumeCommandData volumeCmd;
-
-    // 開始播放默認音頻流
-    Serial.println("Starting audio playback...");
-    audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
     while (true)
     {
-        // 處理音頻循環 - 這必須經常被調用以避免音頻中斷
-        audioPlayer.loop();
-
-        // 檢查音量控制命令
+        // 在對講模式下，跳過 AudioPlayer 操作避免 I2S 衝突
+        if (!micToSpeakerMode)
+        {
+            // 處理音頻循環 - 這必須經常被調用以避免音頻中斷
+            audioPlayer.loop();
+        } // 檢查音量控制命令
         if (xQueueReceive(volumeCommandQueue, &volumeCmd, 0) == pdTRUE)
         {
             switch (volumeCmd.cmd)
@@ -679,7 +956,10 @@ void audioControlTask(void *pvParameters)
                 if (currentVolume < 21)
                 {
                     currentVolume++;
-                    audioPlayer.setVolume(currentVolume);
+                    if (!micToSpeakerMode)
+                    {
+                        audioPlayer.setVolume(currentVolume);
+                    }
                     Serial.printf("Volume UP: %d\n", currentVolume);
                 }
                 break;
@@ -687,7 +967,10 @@ void audioControlTask(void *pvParameters)
                 if (currentVolume > 0)
                 {
                     currentVolume--;
-                    audioPlayer.setVolume(currentVolume);
+                    if (!micToSpeakerMode)
+                    {
+                        audioPlayer.setVolume(currentVolume);
+                    }
                     Serial.printf("Volume DOWN: %d\n", currentVolume);
                 }
                 break;
@@ -695,7 +978,10 @@ void audioControlTask(void *pvParameters)
                 if (volumeCmd.volume >= 0 && volumeCmd.volume <= 21)
                 {
                     currentVolume = volumeCmd.volume;
-                    audioPlayer.setVolume(currentVolume);
+                    if (!micToSpeakerMode)
+                    {
+                        audioPlayer.setVolume(currentVolume);
+                    }
                     Serial.printf("Volume SET: %d\n", currentVolume);
                 }
                 break;
@@ -757,6 +1043,17 @@ void setup()
     ledCommandQueue = xQueueCreate(10, sizeof(LedCommandData));
     volumeCommandQueue = xQueueCreate(10, sizeof(VolumeCommandData));
     ledMutex = xSemaphoreCreateMutex();
+    i2sMutex = xSemaphoreCreateMutex();
+
+    // 檢查隊列和互斥鎖創建是否成功
+    if (ledCommandQueue == NULL || volumeCommandQueue == NULL || ledMutex == NULL || i2sMutex == NULL)
+    {
+        Serial.println("ERROR: 隊列或互斥鎖創建失敗!");
+        while (1)
+        {
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    }
 
     // 僅顯示系統信息
     oled.showSimpleSystemInfo();
@@ -788,7 +1085,10 @@ void setup()
         PRO_CPU_NUM     // 在主核心上運行
     );
 
-    // 運行LED測試序列
+    // 短暫延遲確保任務啟動
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+
+    // 運行LED測試序列（現在隊列已經創建並且任務已啟動）
     runLedTestSequence();
 
     // 創建呼吸燈任務 (在測試完成後啟動)
