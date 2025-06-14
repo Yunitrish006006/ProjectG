@@ -23,6 +23,9 @@ bool wifiConnected = false;
 // 按鈕和LED引腳
 const int CONFIG_BUTTON_PIN = 0; // Boot按鈕，通常用作系統重置
 const int LED_PIN = LED_BUILTIN;
+// 音量控制按鈕
+const int VOLUME_UP_PIN = 1;   // GPIO1 音量增加按鈕
+const int VOLUME_DOWN_PIN = 2; // GPIO2 音量減少按鈕
 // ESP32-S3 N16R8 常用 I2C 腳位
 const int I2C_SDA = 8; // GPIO8 是 ESP32-S3 N16R8 的默認 SDA
 const int I2C_SCL = 9; // GPIO9 是 ESP32-S3 N16R8 的默認 SCL
@@ -37,9 +40,11 @@ TaskHandle_t ledTaskHandle = NULL;
 TaskHandle_t oledTaskHandle = NULL;
 TaskHandle_t breathingTaskHandle = NULL;
 TaskHandle_t audioTaskHandle = NULL;
+TaskHandle_t buttonTaskHandle = NULL;
 
 // 隊列與同步對象
 QueueHandle_t ledCommandQueue = NULL;
+QueueHandle_t volumeCommandQueue = NULL;
 SemaphoreHandle_t ledMutex = NULL;
 
 // 全局對象
@@ -48,6 +53,9 @@ OledDisplay oled(I2C_SDA, I2C_SCL);                   // 使用 ESP32-S3 N16R8 �
 AudioPlayer audioPlayer(I2S_BCLK, I2S_LRC, I2S_DOUT); // 音頻播放器
 uint8_t r = 255, g = 0, b = 0;                        // 初始顏色為紅色
 
+// 音量控制變數
+int currentVolume = 12; // 初始音量 (0-21)
+
 // 命令定義
 enum LedCommand
 {
@@ -55,6 +63,14 @@ enum LedCommand
     CMD_BREATHE,
     CMD_OFF,
     CMD_ON
+};
+
+// 音量控制命令
+enum VolumeCommand
+{
+    VOL_UP,
+    VOL_DOWN,
+    VOL_SET
 };
 
 // 命令結構
@@ -68,11 +84,19 @@ struct LedCommandData
     bool colorShifting;
 };
 
+// 音量命令結構
+struct VolumeCommandData
+{
+    VolumeCommand cmd;
+    int volume;
+};
+
 // 函數聲明
 void oledUpdateTask(void *pvParameters);
 void ledControlTask(void *pvParameters);
 void breathingEffectTask(void *pvParameters);
 void audioControlTask(void *pvParameters);
+void buttonControlTask(void *pvParameters);
 void runLedTestSequence();
 void connectToWiFi();
 void configureNTP();
@@ -138,15 +162,17 @@ void oledUpdateTask(void *pvParameters)
             oled.drawIcon(0, 42, ICON_WIFI);
             oled.showText("WiFi: Connected", 18, 42);
 
-            // 顯示音頻狀態
-            oled.showText("Audio: Playing", 0, 54);
+            // 顯示音頻和音量狀態
+            String audioStatus = "Audio: Playing Vol:" + String(currentVolume);
+            oled.showText(audioStatus, 0, 54);
         }
         else
         {
             // 繪製無連接WiFi圖標
             oled.drawIcon(0, 42, ICON_WIFI_OFF);
             oled.showText("WiFi: Disconnected", 18, 42);
-            oled.showText("Audio: Stopped", 0, 54);
+            String audioStatus = "Audio: Stopped Vol:" + String(currentVolume);
+            oled.showText(audioStatus, 0, 54);
         }
 
         oled.display();
@@ -195,7 +221,6 @@ void ledControlTask(void *pvParameters)
 // 呼吸燈效果任務
 void breathingEffectTask(void *pvParameters)
 {
-    const TickType_t xDelay = 100 / portTICK_PERIOD_MS;
     LedCommandData cmd;
 
     while (true)
@@ -378,6 +403,61 @@ void wifiMonitorTask(void *pvParameters)
     }
 }
 
+// 按鈕控制任務
+void buttonControlTask(void *pvParameters)
+{
+    // 按鈕狀態變數
+    bool volumeUpPressed = false;
+    bool volumeDownPressed = false;
+    bool volumeUpLastState = false;
+    bool volumeDownLastState = false;
+
+    // 防抖動計時器
+    unsigned long lastVolumeUpTime = 0;
+    unsigned long lastVolumeDownTime = 0;
+    const unsigned long debounceDelay = 200; // 200ms防抖動延遲
+
+    VolumeCommandData volumeCmd;
+    const TickType_t xDelay = 50 / portTICK_PERIOD_MS; // 50ms檢查間隔
+
+    while (true)
+    {
+        // 讀取按鈕狀態 (按下為LOW，因為使用內部上拉電阻)
+        bool volumeUpCurrentState = !digitalRead(VOLUME_UP_PIN);
+        bool volumeDownCurrentState = !digitalRead(VOLUME_DOWN_PIN);
+
+        unsigned long currentTime = millis();
+
+        // 處理音量增加按鈕
+        if (volumeUpCurrentState && !volumeUpLastState &&
+            (currentTime - lastVolumeUpTime) > debounceDelay)
+        {
+            // 按鈕剛被按下
+            volumeCmd.cmd = VOL_UP;
+            xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+            lastVolumeUpTime = currentTime;
+            Serial.println("Volume UP button pressed");
+        }
+
+        // 處理音量減少按鈕
+        if (volumeDownCurrentState && !volumeDownLastState &&
+            (currentTime - lastVolumeDownTime) > debounceDelay)
+        {
+            // 按鈕剛被按下
+            volumeCmd.cmd = VOL_DOWN;
+            xQueueSend(volumeCommandQueue, &volumeCmd, 0);
+            lastVolumeDownTime = currentTime;
+            Serial.println("Volume DOWN button pressed");
+        }
+
+        // 更新按鈕狀態
+        volumeUpLastState = volumeUpCurrentState;
+        volumeDownLastState = volumeDownCurrentState;
+
+        vTaskDelay(xDelay);
+    }
+}
+
 // 音頻控制任務
 void audioControlTask(void *pvParameters)
 {
@@ -389,16 +469,51 @@ void audioControlTask(void *pvParameters)
 
     // 初始化音頻播放器
     audioPlayer.begin();
-    audioPlayer.setVolume(21); // 0...21    // 開始播放默認音頻流
-    Serial.println("Starting audio playback...");
-    audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
+    audioPlayer.setVolume(currentVolume); // 使用全局音量變數
+
     const TickType_t xDelay = 1 / portTICK_PERIOD_MS; // 1ms 延遲
     static uint32_t serialCheckCounter = 0;
+    VolumeCommandData volumeCmd;
 
+    // 開始播放默認音頻流
+    Serial.println("Starting audio playback...");
+    audioPlayer.playURL("http://tangosl.4hotel.tw:8005/play.mp3");
     while (true)
     {
         // 處理音頻循環 - 這必須經常被調用以避免音頻中斷
         audioPlayer.loop();
+
+        // 檢查音量控制命令
+        if (xQueueReceive(volumeCommandQueue, &volumeCmd, 0) == pdTRUE)
+        {
+            switch (volumeCmd.cmd)
+            {
+            case VOL_UP:
+                if (currentVolume < 21)
+                {
+                    currentVolume++;
+                    audioPlayer.setVolume(currentVolume);
+                    Serial.printf("Volume UP: %d\n", currentVolume);
+                }
+                break;
+            case VOL_DOWN:
+                if (currentVolume > 0)
+                {
+                    currentVolume--;
+                    audioPlayer.setVolume(currentVolume);
+                    Serial.printf("Volume DOWN: %d\n", currentVolume);
+                }
+                break;
+            case VOL_SET:
+                if (volumeCmd.volume >= 0 && volumeCmd.volume <= 21)
+                {
+                    currentVolume = volumeCmd.volume;
+                    audioPlayer.setVolume(currentVolume);
+                    Serial.printf("Volume SET: %d\n", currentVolume);
+                }
+                break;
+            }
+        }
 
         // 每1000次循環才檢查一次串列埠輸入，避免影響音頻性能
         serialCheckCounter++;
@@ -430,6 +545,11 @@ void setup()
     randomSeed(analogRead(A0));
     pinMode(LED_PIN, OUTPUT);
 
+    // 初始化音量控制按鈕
+    pinMode(VOLUME_UP_PIN, INPUT_PULLUP);
+    pinMode(VOLUME_DOWN_PIN, INPUT_PULLUP);
+    Serial.println("Volume control buttons initialized");
+
     // 初始化 OLED 顯示
     oled.begin();
 
@@ -447,10 +567,9 @@ void setup()
     if (wifiConnected)
     {
         syncTimeWithNTP();
-    }
-
-    // 創建隊列和互斥鎖
+    } // 創建隊列和互斥鎖
     ledCommandQueue = xQueueCreate(10, sizeof(LedCommandData));
+    volumeCommandQueue = xQueueCreate(10, sizeof(VolumeCommandData));
     ledMutex = xSemaphoreCreateMutex();
 
     // 僅顯示系統信息
@@ -495,9 +614,7 @@ void setup()
         1,                    // 優先級 (1 是低優先級)
         &breathingTaskHandle, // 任務控制句柄
         PRO_CPU_NUM           // 在主核心上運行
-    );
-
-    // 創建WiFi監控任務
+    );                        // 創建WiFi監控任務
     xTaskCreate(
         wifiMonitorTask, // 任務函數
         "WiFi Monitor",  // 任務名稱
@@ -505,7 +622,18 @@ void setup()
         NULL,            // 參數
         1,               // 優先級 (1 是低優先級)
         NULL             // 不需要任務句柄
-    );                   // 創建音頻控制任務 - 使用高優先級和專用核心
+    );
+
+    // 創建按鈕控制任務
+    xTaskCreatePinnedToCore(
+        buttonControlTask, // 任務函數
+        "Button Control",  // 任務名稱
+        4096,              // 堆棧大小
+        NULL,              // 參數
+        2,                 // 中等優先級 (2)
+        &buttonTaskHandle, // 任務控制句柄
+        APP_CPU_NUM        // 在第二個核心上運行
+    );                     // 創建音頻控制任務 - 使用高優先級和專用核心
     xTaskCreatePinnedToCore(
         audioControlTask, // 任務函數
         "Audio Control",  // 任務名稱
