@@ -22,7 +22,7 @@ class ESP32MqttAudioClient:
         self.mqtt_password = mqtt_password
         
         # MQTT 客戶端
-        self.client = mqtt.Client()
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.client.on_disconnect = self.on_disconnect

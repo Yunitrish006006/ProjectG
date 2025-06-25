@@ -12,7 +12,7 @@ class SimpleMqttTest:
     def __init__(self, mqtt_host="192.168.137.1", mqtt_port=1883):
         self.mqtt_host = mqtt_host
         self.mqtt_port = mqtt_port
-        self.client = mqtt.Client()
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.client.on_connect = self.on_connect
         self.client.on_message = self.on_message
         self.connected = False

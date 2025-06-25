@@ -19,6 +19,11 @@ import time
 from collections import deque
 from datetime import datetime
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
+# 配置 matplotlib 支持中文顯示
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans', 'Arial Unicode MS', 'Microsoft YaHei']
+plt.rcParams['axes.unicode_minus'] = False
 import matplotlib.animation as animation
 
 class ESP32AudioReceiver:
@@ -29,9 +34,7 @@ class ESP32AudioReceiver:
         # 音訊參數 (與 ESP32 一致)
         self.sample_rate = 16000
         self.channels = 1
-        self.sample_width = 2  # 16-bit
-        
-        # MQTT 客戶端
+        self.sample_width = 2  # 16-bit        # MQTT 客戶端 (使用默認配置避免兼容性問題)
         self.mqtt_client = mqtt.Client()
         self.mqtt_client.on_connect = self.on_mqtt_connect
         self.mqtt_client.on_message = self.on_mqtt_message
@@ -55,8 +58,7 @@ class ESP32AudioReceiver:
             'start_time': time.time(),
             'last_packet_time': 0
         }
-        
-        # 音訊保存
+          # 音訊保存
         self.wav_file = None
         self.wav_filename = None
         
