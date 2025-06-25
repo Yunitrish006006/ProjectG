@@ -2,6 +2,8 @@
 #include "LedController.h"
 #include "OledDisplay.h"
 #include "AudioPlayer.h"
+#include "AudioFeatureExtractor.h"
+#include "AudioMqttManager.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -17,7 +19,7 @@ const int daylightOffset_sec = 0; // 不使用夏令時
 
 // WiFi 設置 - 固定使用以下SSID和密碼
 // 要更改WiFi連接設置，請直接修改以下兩行
-const char *ssid = "YunRog";         // 請修改為您的WiFi名稱
+const char *ssid = "Yun";            // 請修改為您的WiFi名稱
 const char *password = "0937565253"; // 請修改為您的WiFi密碼
 bool wifiConnected = false;
 
@@ -64,7 +66,14 @@ SemaphoreHandle_t i2sMutex = NULL;
 LedController ledController;
 OledDisplay oled(I2C_SDA, I2C_SCL);                   // 使用 ESP32-S3 N16R8 默認 I2C 引腳
 AudioPlayer audioPlayer(I2S_BCLK, I2S_LRC, I2S_DOUT); // 音頻播放器
+AudioMqttManager audioMqttManager;                    // MQTT 音訊管理器
 uint8_t r = 255, g = 0, b = 0;                        // 初始顏色為紅色
+
+const char *mqttServer = "broker.emqx.io";
+
+const int mqttPort = 1883;
+const char *mqttUser = nullptr;     // 公共服務器通常不需要認證
+const char *mqttPassword = nullptr; // 公共服務器通常不需要認證
 
 // 音量控制變數
 int currentVolume = 12; // 初始音量 (0-21)
@@ -76,6 +85,10 @@ int16_t micAudioBuf[256];
 bool micEnabled = false;
 bool musicPaused = false;      // 音樂是否被暫停
 bool micToSpeakerMode = false; // 麥克風輸出到喇叭模式
+
+// MQTT 音訊流和特徵提取控制
+bool mqttAudioEnabled = false;
+bool mqttFeatureExtractionEnabled = false;
 
 // 命令定義
 enum LedCommand
@@ -926,6 +939,10 @@ void microphoneTask(void *pvParameters)
                 {
                     // 原模式：將音頻數據寫入串口
                     Serial.write((uint8_t *)micAudioBuf, bytesRead);
+                } // MQTT 音訊傳遞：如果啟用了 MQTT 音訊，將數據發送到 MQTT 管理器
+                if (mqttAudioEnabled && audioMqttManager.isPublishingActive())
+                {
+                    audioMqttManager.pushAudioData(micAudioBuf, bytesRead / sizeof(int16_t));
                 }
 
                 // 每500次循環顯示一次音頻電平（避免影響OLED顯示）
@@ -946,6 +963,13 @@ void microphoneTask(void *pvParameters)
                     if (!micToSpeakerMode)
                     {
                         // Serial.printf("Mic Level: %d\n", avgLevel);
+                    } // 顯示 MQTT 音訊狀態
+                    if (mqttAudioEnabled && audioLevelCounter % 2000 == 0)
+                    {
+                        Serial.printf("MQTT 音訊狀態 - 連接: %s, 發布: %s, 特徵提取: %s\n",
+                                      audioMqttManager.isConnectedToMqtt() ? "是" : "否",
+                                      audioMqttManager.isPublishingActive() ? "是" : "否",
+                                      mqttFeatureExtractionEnabled ? "啟用" : "停用");
                     }
                 }
             }
@@ -1178,21 +1202,66 @@ void setup()
     );
 
     // 創建音頻控制任務 - 使用高優先級和專用核心
-    xTaskCreatePinnedToCore(
-        audioControlTask, // 任務函數
-        "Audio Control",  // 任務名稱
-        8192,             // 增加堆棧大小以處理音頻緩衝
-        NULL,             // 參數
-        3,                // 高優先級 (3 是高優先級)
-        &audioTaskHandle, // 任務控制句柄
-        PRO_CPU_NUM       // 在主核心上運行以獲得更好的性能
-    );
+    xTaskCreatePinnedToCore(audioControlTask, // 任務函數
+                            "Audio Control",  // 任務名稱
+                            8192,             // 增加堆棧大小以處理音頻緩衝
+                            NULL,             // 參數
+                            3,                // 高優先級 (3 是高優先級)
+                            &audioTaskHandle, // 任務控制句柄
+                            PRO_CPU_NUM       // 在主核心上運行以獲得更好的性能
+    );                                        // 初始化 MQTT 音訊管理器
+    if (wifiConnected)
+    {
+        Serial.println("正在初始化 MQTT 音訊管理器...");
+        if (audioMqttManager.begin(mqttServer, mqttPort, mqttUser, mqttPassword, "ESP32_ProjectG"))
+        {
+            Serial.println("✓ MQTT 音訊管理器初始化成功");
+
+            // 連接到 MQTT 服務器
+            if (audioMqttManager.connect())
+            {
+                mqttAudioEnabled = true;
+                Serial.printf("✓ MQTT 服務器連接成功: %s:%d\n", mqttServer, mqttPort);
+
+                // 預設啟用特徵提取
+                if (audioMqttManager.enableFeatureExtraction())
+                {
+                    mqttFeatureExtractionEnabled = true;
+                    Serial.println("✓ MQTT 特徵提取已啟用");
+                }
+
+                // 啟動音訊發布
+                if (audioMqttManager.startPublishing())
+                {
+                    Serial.println("✓ MQTT 音訊發布已啟動");
+                }
+            }
+            else
+            {
+                Serial.println("✗ MQTT 服務器連接失敗");
+            }
+        }
+        else
+        {
+            Serial.println("✗ MQTT 音訊管理器初始化失敗");
+        }
+    }
+    else
+    {
+        Serial.println("⚠️  WiFi 未連接，跳過 MQTT 音訊初始化");
+    }
 }
 
 void loop()
 {
     // 在使用 FreeRTOS 時，主循環可以保持空白或執行低優先級任務
     // 所有主要功能都已在任務中完成
+
+    // 處理 MQTT 循環
+    if (mqttAudioEnabled)
+    {
+        audioMqttManager.loop();
+    }
 
     // 每秒檢查一次系統健康狀況
     vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -1219,6 +1288,10 @@ void loop()
         lastStatusTime = millis();
         Serial.printf("Free heap: %d bytes, Audio task running: %s\n",
                       ESP.getFreeHeap(),
-                      (audioTaskHandle != NULL) ? "Yes" : "No");
+                      (audioTaskHandle != NULL) ? "Yes" : "No"); // 輸出 MQTT 狀態
+        if (mqttAudioEnabled)
+        {
+            audioMqttManager.printStatus();
+        }
     }
 }
