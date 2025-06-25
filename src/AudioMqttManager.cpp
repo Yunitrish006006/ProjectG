@@ -199,45 +199,57 @@ void AudioMqttManager::disconnect()
 bool AudioMqttManager::startPublishing()
 {
     if (isPublishing)
+    {
+        Serial.println("ℹ️ 發布已在進行中");
         return true;
+    }
 
     if (!isConnected)
     {
         Serial.println("✗ MQTT 未連接，無法開始發布");
         return false;
     }
+    Serial.println("🚀 開始創建 MQTT 發布任務...");
+
+    // 重要：在創建任務之前設置 isPublishing = true
+    // 否則任務啟動後會立即退出
+    isPublishing = true;
 
     // 創建音訊發布任務
     BaseType_t result1 = xTaskCreatePinnedToCore(
         audioPublishTask,
         "Audio_Publish",
-        4096,
+        8192, // 增加堆疊大小
         this,
-        2,
+        1, // 降低優先級
         &audioPublishTaskHandle,
-        1 // Core 1
+        0 // Core 0 (與其他任務分開)
     );
+
+    Serial.printf("音訊發布任務創建結果: %s\n", result1 == pdPASS ? "成功" : "失敗");
 
     // 創建特徵發布任務
     BaseType_t result2 = xTaskCreatePinnedToCore(
         featurePublishTask,
         "Feature_Publish",
-        4096,
+        8192, // 增加堆疊大小
         this,
-        2,
+        1, // 降低優先級
         &featurePublishTaskHandle,
-        1 // Core 1
+        0 // Core 0
     );
 
+    Serial.printf("特徵發布任務創建結果: %s\n", result2 == pdPASS ? "成功" : "失敗");
     if (result1 == pdPASS && result2 == pdPASS)
     {
-        isPublishing = true;
         Serial.println("✓ 音訊發布已開始");
         return true;
     }
     else
     {
-        Serial.println("✗ 無法創建發布任務");
+        // 如果任務創建失敗，重置 isPublishing
+        isPublishing = false;
+        Serial.printf("✗ 無法創建發布任務 - 音訊: %d, 特徵: %d\n", result1, result2);
         return false;
     }
 }
@@ -282,7 +294,10 @@ bool AudioMqttManager::disableFeatureExtraction()
 bool AudioMqttManager::pushAudioData(int16_t *audioData, size_t length)
 {
     if (!audioData || length == 0)
+    {
+        Serial.println("⚠️ pushAudioData: 無效的音訊數據或長度為0");
         return false;
+    }
 
     // 創建音訊包
     MqttAudioPacket packet;
@@ -294,8 +309,16 @@ bool AudioMqttManager::pushAudioData(int16_t *audioData, size_t length)
     memcpy(packet.audioData, audioData, packet.dataLength * sizeof(int16_t));
 
     // 發送到音訊隊列
-    if (xQueueSend(audioQueue, &packet, 0) != pdTRUE)
+    BaseType_t queueResult = xQueueSend(audioQueue, &packet, 0);
+    if (queueResult != pdTRUE)
     {
+        static uint32_t queueFailCount = 0;
+        queueFailCount++;
+        if (queueFailCount % 100 == 0) // 每100次失敗輸出一次
+        {
+            Serial.printf("⚠️ 音訊隊列發送失敗 %d 次 - 隊列可能已滿\n", queueFailCount);
+            Serial.printf("隊列狀態 - 剩餘空間: %d\n", uxQueueSpacesAvailable(audioQueue));
+        }
         return false;
     } // 如果啟用特徵提取，處理特徵
     if (isFeatureExtractionEnabled && featureExtractor)
@@ -346,7 +369,12 @@ bool AudioMqttManager::pushAudioData(int16_t *audioData, size_t length)
 bool AudioMqttManager::publishAudioPacket(MqttAudioPacket *packet)
 {
     if (!isConnected || !packet)
+    {
+        Serial.printf("⚠️ 無法發布音訊包 - 連接狀態: %s, 包有效性: %s\n",
+                      isConnected ? "已連接" : "未連接",
+                      packet ? "有效" : "無效");
         return false;
+    }
 
     // 創建 JSON 格式的音訊數據
     JsonDocument doc;
@@ -363,14 +391,19 @@ bool AudioMqttManager::publishAudioPacket(MqttAudioPacket *packet)
     String jsonString;
     serializeJson(doc, jsonString);
 
-    if (mqttClient.publish(MQTT_TOPIC_AUDIO, jsonString.c_str()))
+    bool publishResult = mqttClient.publish(MQTT_TOPIC_AUDIO, jsonString.c_str());
+
+    if (publishResult)
     {
         stats.audioPacketsPublished++;
+        Serial.printf("✓ 音訊包已發布 - 序列: %d, 長度: %d\n",
+                      packet->sequenceNumber, packet->dataLength);
         return true;
     }
     else
     {
         stats.publishErrors++;
+        Serial.printf("✗ 音訊包發布失敗 - 序列: %d\n", packet->sequenceNumber);
         return false;
     }
 }
@@ -583,20 +616,49 @@ void AudioMqttManager::audioPublishTask(void *parameter)
 {
     AudioMqttManager *manager = static_cast<AudioMqttManager *>(parameter);
     MqttAudioPacket packet;
+    uint32_t processedPackets = 0;
+
+    Serial.println("🎵 音訊發布任務已啟動");
+    Serial.printf("🔍 isPublishing 狀態: %s\n", manager->isPublishing ? "true" : "false");
 
     while (manager->isPublishing)
     {
         if (xQueueReceive(manager->audioQueue, &packet, pdMS_TO_TICKS(100)) == pdTRUE)
         {
+            processedPackets++;
+
             if (xSemaphoreTake(manager->mqttMutex, pdMS_TO_TICKS(100)) == pdTRUE)
             {
-                manager->publishAudioPacket(&packet);
+                bool publishResult = manager->publishAudioPacket(&packet);
+                if (publishResult)
+                {
+                    // 每100個包輸出一次成功統計
+                    if (processedPackets % 100 == 0)
+                    {
+                        Serial.printf("✓ 已處理 %d 個音訊包\n", processedPackets);
+                    }
+                }
                 xSemaphoreGive(manager->mqttMutex);
+            }
+            else
+            {
+                Serial.println("⚠️ 無法獲取 MQTT 互斥鎖");
+            }
+        }
+        else
+        {
+            // 隊列空的時候，定期輸出狀態
+            static uint32_t idleCount = 0;
+            idleCount++;
+            if (idleCount % 100 == 0) // 每10秒輸出一次（100 * 100ms）
+            {
+                Serial.printf("🔄 音訊發布任務等待中 - 已處理: %d 包\n", processedPackets);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(AUDIO_PUBLISH_INTERVAL));
     }
 
+    Serial.println("🛑 音訊發布任務結束");
     vTaskDelete(nullptr);
 }
 
