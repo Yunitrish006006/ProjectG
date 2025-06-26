@@ -155,6 +155,15 @@ bool AudioMqttManager::connect()
 
     Serial.printf("正在連接到 MQTT 服務器 %s:%d...\n", mqttServer, mqttPort);
 
+    // 設置服務器地址和端口
+    mqttClient.setServer(mqttServer, mqttPort);
+
+    // 設置回調函數
+    mqttClient.setCallback(staticMqttCallback);
+
+    // 短暫延遲確保WiFi穩定
+    vTaskDelay(pdMS_TO_TICKS(500));
+
     // 嘗試連接
     bool connected = false;
     if (mqttUser && mqttPassword)
