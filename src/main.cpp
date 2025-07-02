@@ -31,7 +31,7 @@ const int LED_PIN = LED_BUILTIN;
 const int VOLUME_UP_PIN = 1;   // GPIO1 音量增加按鈕
 const int VOLUME_DOWN_PIN = 2; // GPIO2 音量減少按鈕
 // 麥克風控制按鈕
-const int MIC_CONTROL_PIN = 42; // GPIO3 麥克風開關按鈕
+const int MIC_CONTROL_PIN = 21; // GPIO21 麥克風開關按鈕
 // ESP32-S3 N16R8 常用 I2C 腳位
 const int I2C_SDA = 8; // GPIO8 是 ESP32-S3 N16R8 的默認 SDA
 const int I2C_SCL = 9; // GPIO9 是 ESP32-S3 N16R8 的默認 SCL
@@ -98,6 +98,11 @@ bool mqttFeatureExtractionEnabled = false;
 
 // 按鈕控制錄音模式
 bool buttonRecordingMode = true;      // 啟用按鈕錄音模式
+bool diagnosticMode = false;          // 診斷模式：簡化按鈕處理避免重啟
+bool testMutexOnly = false;           // 測試階段1：只測試互斥鎖獲取
+bool testCleanupOnly = false;         // 測試階段2：測試 I2S 清理操作
+bool testSetupOnly = false;           // 測試階段3：測試麥克風設置操作
+bool testDirectSetup = false;         // 測試階段4：直接設置，完全跳過清理
 bool isRecording = false;             // 當前是否正在錄音
 bool pendingAudioProcessing = false;  // 是否有待處理的音訊
 unsigned long recordingStartTime = 0; // 錄音開始時間
@@ -585,18 +590,39 @@ void buttonControlTask(void *pvParameters)
         if (micControlCurrentState && !micControlLastState &&
             (currentTime - lastMicControlTime) > debounceDelay)
         {
+            Serial.println("🔘 麥克風控制按鈕被按下");
+
+            // 重置看門狗，防止系統重啟
+            esp_task_wdt_reset();
             if (buttonRecordingMode)
             {
-                // 按鈕錄音模式
-                if (!isRecording)
+                Serial.printf("📍 按鈕錄音模式 - 當前狀態: isRecording=%d\n", isRecording);
+
+                if (diagnosticMode)
                 {
-                    // 開始錄音
-                    startButtonRecording();
+                    // 診斷模式：只打印訊息，不執行實際操作
+                    Serial.println("🔍 診斷模式：按鈕動作檢測成功");
+                    Serial.printf("   - 按鈕狀態: 已按下\n");
+                    Serial.printf("   - 時間戳: %lu ms\n", currentTime);
+                    Serial.printf("   - 防抖動間隔: %lu ms\n", currentTime - lastMicControlTime);
+                    Serial.printf("   - 當前錄音狀態: %s\n", isRecording ? "錄音中" : "待機");
+                    Serial.println("🔍 診斷模式：跳過實際錄音操作");
                 }
                 else
                 {
-                    // 停止錄音並處理
-                    stopButtonRecordingAndProcess();
+                    // 正常模式：執行錄音操作
+                    if (!isRecording)
+                    {
+                        // 開始錄音
+                        Serial.println("🎙️ 準備開始錄音...");
+                        startButtonRecording();
+                    }
+                    else
+                    {
+                        // 停止錄音並處理
+                        Serial.println("🛑 準備停止錄音...");
+                        stopButtonRecordingAndProcess();
+                    }
                 }
             }
             else
@@ -612,7 +638,7 @@ void buttonControlTask(void *pvParameters)
                 }
             }
             lastMicControlTime = currentTime;
-            Serial.println("Microphone control button pressed");
+            Serial.println("✓ 麥克風控制按鈕處理完成");
         } // 更新按鈕狀態
         volumeUpLastState = volumeUpCurrentState;
         volumeDownLastState = volumeDownCurrentState;
@@ -769,48 +795,104 @@ esp_err_t setupI2SOutput()
     return ESP_OK;
 }
 
+// 強制清理所有 I2S 資源
+esp_err_t forceResetI2S()
+{
+    Serial.println("🔄 強制重置所有 I2S 資源...");
+
+    // 嘗試清理所有可能的 I2S 端口
+    for (int port = 0; port < I2S_NUM_MAX; port++)
+    {
+        Serial.printf("檢查 I2S 端口 %d...\n", port);
+
+        // 嘗試停止
+        esp_err_t stopResult = i2s_stop((i2s_port_t)port);
+        if (stopResult == ESP_OK)
+        {
+            Serial.printf("成功停止 I2S 端口 %d\n", port);
+        }
+
+        // 嘗試卸載
+        esp_err_t uninstallResult = i2s_driver_uninstall((i2s_port_t)port);
+        if (uninstallResult == ESP_OK)
+        {
+            Serial.printf("成功卸載 I2S 端口 %d\n", port);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    Serial.println("✅ 強制 I2S 重置完成");
+    vTaskDelay(pdMS_TO_TICKS(500)); // 等待硬體重置
+    return ESP_OK;
+}
+
 // 安全清理 I2S 資源
 esp_err_t safeCleanupI2SResources()
 {
     Serial.println("開始安全清理 I2S 資源...");
 
+    // 只有在麥克風已啟用的情況下才進行清理
+    if (!micEnabled)
+    {
+        Serial.println("麥克風未啟用，跳過 I2S 清理");
+        return ESP_OK;
+    }
+
     // 只清理麥克風使用的 I2S_NUM_1，避免觸碰未初始化的 I2S_NUM_0
     esp_err_t result2 = ESP_OK;
 
-    // 安全地停止麥克風 I2S
+    Serial.println("檢查 I2S 端口狀態...");
+
+    // 嘗試檢查 I2S 是否已安裝，使用更安全的方法
+    bool i2sInstalled = false;
+
+    // 嘗試停止 I2S，如果失敗說明可能未安裝
+    Serial.println("嘗試停止麥克風 I2S...");
     result2 = i2s_stop(MIC_I2S_PORT);
     if (result2 == ESP_OK)
     {
         Serial.println("成功停止麥克風 I2S");
+        i2sInstalled = true;
     }
     else if (result2 == ESP_ERR_INVALID_STATE)
     {
-        Serial.println("麥克風 I2S 未運行，跳過停止步驟");
+        Serial.println("麥克風 I2S 未運行，但可能已安裝");
+        i2sInstalled = true; // 可能已安裝但未運行
     }
     else
     {
-        Serial.printf("麥克風 I2S 停止警告: %d\n", result2);
+        Serial.printf("麥克風 I2S 停止錯誤: %d - 可能未安裝\n", result2);
+        i2sInstalled = false;
     }
 
     // 短暫延遲
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // 安全地卸載麥克風 I2S 驅動
-    esp_err_t result4 = i2s_driver_uninstall(MIC_I2S_PORT);
-    if (result4 == ESP_OK)
+    // 只有在確認 I2S 已安裝的情況下才嘗試卸載
+    if (i2sInstalled)
     {
-        Serial.println("成功卸載麥克風 I2S 驅動");
-    }
-    else if (result4 == ESP_ERR_INVALID_STATE)
-    {
-        Serial.println("麥克風 I2S 驅動未安裝，跳過卸載步驟");
+        Serial.println("嘗試卸載麥克風 I2S 驅動...");
+        esp_err_t result4 = i2s_driver_uninstall(MIC_I2S_PORT);
+        if (result4 == ESP_OK)
+        {
+            Serial.println("成功卸載麥克風 I2S 驅動");
+        }
+        else if (result4 == ESP_ERR_INVALID_STATE)
+        {
+            Serial.println("麥克風 I2S 驅動未安裝，跳過卸載步驟");
+        }
+        else
+        {
+            Serial.printf("麥克風 I2S 卸載警告: %d\n", result4);
+        }
     }
     else
     {
-        Serial.printf("麥克風 I2S 卸載警告: %d\n", result4);
+        Serial.println("跳過 I2S 驅動卸載（未安裝）");
     }
 
-    Serial.printf("I2S 清理結果 - 停止: %d 卸載: %d\n", result2, result4);
+    Serial.printf("I2S 清理結果 - 停止: %d\n", result2);
 
     // 較長延遲確保硬體完全重置
     vTaskDelay(pdMS_TO_TICKS(200));
@@ -1380,13 +1462,11 @@ void setup()
         NULL,            // 參數
         1,               // 優先級 (1 是低優先級)
         NULL             // 不需要任務句柄
-    );
-
-    // 創建按鈕控制任務
+    );                   // 創建按鈕控制任務
     xTaskCreatePinnedToCore(
         buttonControlTask, // 任務函數
         "Button Control",  // 任務名稱
-        4096,              // 堆棧大小
+        8192,              // 增加堆棧大小到8KB，避免堆疊溢出
         NULL,              // 參數
         2,                 // 中等優先級 (2)
         &buttonTaskHandle, // 任務控制句柄
@@ -1590,55 +1670,217 @@ void startButtonRecording()
     }
 
     Serial.println("============================================================");
-    Serial.println("🎙️ 開始按鈕錄音模式");
+    Serial.println("🎙️ 開始按鈕錄音模式測試");
     Serial.println("============================================================");
 
     // 清除待處理標誌
     pendingAudioProcessing = false;
 
     // 記錄開始時間
-    recordingStartTime = millis(); // 啟動麥克風
-    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(2000)) == pdTRUE)
+    recordingStartTime = millis();
+
+    // 添加看門狗重置，防止系統重啟
+    esp_task_wdt_reset();
+    if (testMutexOnly)
+    {
+        Serial.println("🔧 測試階段1：只測試互斥鎖獲取");
+
+        // 測試獲取互斥鎖
+        if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(5000)) == pdTRUE)
+        {
+            Serial.println("✅ 成功獲取 I2S 互斥鎖");
+            vTaskDelay(pdMS_TO_TICKS(100)); // 模擬一些處理時間
+            Serial.println("✅ 模擬處理完成，準備釋放鎖");
+            xSemaphoreGive(i2sMutex);
+            Serial.println("✅ 互斥鎖測試完成，無問題");
+        }
+        else
+        {
+            Serial.println("❌ 無法獲取 I2S 互斥鎖 - 這可能是問題所在");
+        }
+        return;
+    }
+    if (testDirectSetup)
+    {
+        Serial.println("🔧 測試階段4：直接麥克風設置（無任何清理）");
+
+        // 測試獲取互斥鎖和直接設置麥克風
+        if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(5000)) == pdTRUE)
+        {
+            Serial.println("✅ 成功獲取 I2S 互斥鎖");
+
+            if (!micEnabled)
+            {
+                Serial.println("🎤 直接嘗試麥克風設置（無清理）...");
+
+                // 完全跳過任何清理操作，直接設置
+                esp_err_t setupResult = setupMicrophone();
+                if (setupResult == ESP_OK)
+                {
+                    Serial.println("✅ 麥克風設置成功！");
+                    micEnabled = true;
+                    isRecording = true;
+
+                    // 嘗試啟動 I2S
+                    esp_err_t startResult = i2s_start(MIC_I2S_PORT);
+                    if (startResult == ESP_OK)
+                    {
+                        Serial.println("✅ I2S 啟動成功！");
+                    }
+                    else
+                    {
+                        Serial.printf("⚠️ I2S 啟動警告: %d\n", startResult);
+                    }
+
+                    Serial.println("✅ 錄音狀態已設置");
+                }
+                else
+                {
+                    Serial.printf("❌ 麥克風設置失敗，錯誤代碼: %d\n", setupResult);
+
+                    // 顯示錯誤代碼含義
+                    if (setupResult == ESP_ERR_INVALID_STATE)
+                    {
+                        Serial.println("   → ESP_ERR_INVALID_STATE: I2S 端口可能已被使用");
+                    }
+                    else if (setupResult == ESP_ERR_NO_MEM)
+                    {
+                        Serial.println("   → ESP_ERR_NO_MEM: 記憶體不足");
+                    }
+                    else if (setupResult == ESP_ERR_INVALID_ARG)
+                    {
+                        Serial.println("   → ESP_ERR_INVALID_ARG: 參數無效");
+                    }
+                }
+            }
+            else
+            {
+                Serial.println("⚠️ 麥克風已啟用");
+            }
+
+            xSemaphoreGive(i2sMutex);
+            Serial.println("✅ 直接設置測試完成");
+        }
+        else
+        {
+            Serial.println("❌ 無法獲取 I2S 互斥鎖");
+        }
+        return;
+    }
+
+    if (testSetupOnly)
+    {
+        Serial.println("🔧 測試階段3：測試麥克風設置操作（跳過清理）");
+
+        // 測試獲取互斥鎖和麥克風設置
+        if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(5000)) == pdTRUE)
+        {
+            Serial.println("✅ 成功獲取 I2S 互斥鎖");
+            if (!micEnabled)
+            {
+                Serial.println("🎤 開始測試麥克風設置（使用強制重置）...");
+
+                // 先強制重置所有 I2S 資源
+                forceResetI2S();
+
+                // 然後設置麥克風
+                esp_err_t setupResult = setupMicrophone();
+                if (setupResult == ESP_OK)
+                {
+                    Serial.println("✅ 麥克風設置成功！");
+                    micEnabled = true;
+                    isRecording = true;
+
+                    Serial.println("✅ 錄音狀態已設置");
+                }
+                else
+                {
+                    Serial.printf("❌ 麥克風設置失敗，錯誤代碼: %d\n", setupResult);
+                }
+            }
+            else
+            {
+                Serial.println("⚠️ 麥克風已啟用");
+            }
+
+            xSemaphoreGive(i2sMutex);
+            Serial.println("✅ 麥克風設置測試完成");
+        }
+        else
+        {
+            Serial.println("❌ 無法獲取 I2S 互斥鎖");
+        }
+        return;
+    } // 啟動麥克風（正常模式）
+    if (xSemaphoreTake(i2sMutex, pdMS_TO_TICKS(5000)) == pdTRUE)
     {
         if (!micEnabled)
         {
             Serial.println("正在啟動麥克風用於按鈕錄音...");
 
-            // 在按鈕錄音模式下，先清理任何現有的 I2S 資源
-            safeCleanupI2SResources();
-            vTaskDelay(pdMS_TO_TICKS(200)); // 給予更多時間清理
-
-            if (setupMicrophone() == ESP_OK)
+            // 在按鈕錄音模式下，第一次啟動不需要清理
+            // 只有在重複啟動時才需要清理（但我們會在 stop 函數中處理）
+            Serial.println("步驟1: 直接設置麥克風");
+            esp_err_t setupResult = setupMicrophone();
+            if (setupResult == ESP_OK)
             {
-                micEnabled = true;
-                isRecording = true;
-
-                // 啟動 MQTT 音訊發布
-                if (mqttAudioEnabled)
+                Serial.println("步驟2: 啟動 I2S");
+                esp_err_t startResult = i2s_start(MIC_I2S_PORT);
+                if (startResult == ESP_OK)
                 {
-                    Serial.println("✓ MQTT 音訊錄製模式已啟動");
+                    micEnabled = true;
+                    isRecording = true;
+
+                    // 啟動 MQTT 音訊發布
+                    if (mqttAudioEnabled)
+                    {
+                        Serial.println("✓ MQTT 音訊錄製模式已啟動");
+                    }
+
+                    Serial.println("✓ 按鈕錄音已開始 - 再按一次停止並處理");
+                    Serial.println("============================================================");
+
+                    // 更新 LED 狀態為錄音中（紅色呼吸燈）
+                    LedCommandData cmd;
+                    cmd.cmd = CMD_BREATHE;
+                    cmd.r = 255;
+                    cmd.g = 0;
+                    cmd.b = 0;
+                    if (ledCommandQueue != NULL)
+                    {
+                        xQueueSend(ledCommandQueue, &cmd, 0);
+                    }
                 }
-
-                Serial.println("✓ 按鈕錄音已開始 - 再按一次停止並處理");
-                Serial.println("============================================================");
-
-                // 更新 LED 狀態為錄音中（紅色呼吸燈）
-                LedCommand cmd = CMD_BREATHE;
-                if (ledCommandQueue != NULL)
+                else
                 {
-                    xQueueSend(ledCommandQueue, &cmd, 0);
+                    Serial.printf("✗ I2S 啟動失敗: %d\n", startResult);
+                    setupResult = startResult; // 讓下面的錯誤處理統一處理
                 }
             }
-            else
+
+            if (setupResult != ESP_OK)
             {
-                Serial.println("✗ 麥克風啟動失敗");
+                Serial.printf("✗ 麥克風啟動失敗，錯誤代碼: %d\n", setupResult);
+                isRecording = false;
+                micEnabled = false;
+
+                // 顯示錯誤代碼含義
+                if (setupResult == ESP_ERR_INVALID_STATE)
+                {
+                    Serial.println("   → ESP_ERR_INVALID_STATE: I2S 端口可能已被使用");
+                    Serial.println("   → 建議重啟系統以清理 I2S 資源");
+                }
             }
+        }
+        else
+        {
+            Serial.println("⚠️ 麥克風已啟用，無需重複啟動");
         }
         xSemaphoreGive(i2sMutex);
     }
     else
     {
-        Serial.println("✗ 無法獲取 I2S 互斥鎖");
+        Serial.println("✗ 無法獲取 I2S 互斥鎖，錄音啟動失敗");
     }
 }
 
@@ -1664,15 +1906,38 @@ void stopButtonRecordingAndProcess()
         {
             Serial.println("正在停止麥克風錄音...");
 
-            micEnabled = false;
-            isRecording = false;
-            pendingAudioProcessing = true; // 短暫延遲讓任務有時間檢查狀態變化
+            // 先清理 I2S 資源（在設置 micEnabled = false 之前）
+            Serial.println("步驟1: 清理 I2S 資源");
+            esp_err_t stopResult = i2s_stop(MIC_I2S_PORT);
+            if (stopResult == ESP_OK)
+            {
+                Serial.println("✅ 成功停止 I2S");
+            }
+            else
+            {
+                Serial.printf("⚠️ I2S 停止警告: %d\n", stopResult);
+            }
+
             vTaskDelay(pdMS_TO_TICKS(100));
 
-            // 清理 I2S 資源
-            safeCleanupI2SResources();
+            esp_err_t uninstallResult = i2s_driver_uninstall(MIC_I2S_PORT);
+            if (uninstallResult == ESP_OK)
+            {
+                Serial.println("✅ 成功卸載 I2S 驅動");
+            }
+            else
+            {
+                Serial.printf("⚠️ I2S 卸載警告: %d\n", uninstallResult);
+            }
 
-            Serial.println("✓ 麥克風錄音已停止");
+            // 然後設置狀態變數
+            micEnabled = false;
+            isRecording = false;
+            pendingAudioProcessing = true;
+
+            vTaskDelay(pdMS_TO_TICKS(200)); // 等待硬體完全重置
+
+            Serial.println("✓ 麥克風錄音已停止，I2S 資源已釋放");
 
             // 更新 LED 狀態為處理中（藍色常亮）
             LedCommand cmd = CMD_SET_COLOR;
